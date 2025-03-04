@@ -1,6 +1,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import timesfm
+import os
 
 # CSV 파일 읽기 및 전처리
 df = pd.read_csv('../data/data_order_cnt.csv')
@@ -66,3 +67,14 @@ plt.legend()
 plt.gcf().autofmt_xdate()
 plt.tight_layout()
 plt.show()
+
+# 현재 스크립트의 디렉토리 경로
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# 이미지 파일 저장 경로
+image_path = os.path.join(current_dir, 'timesfm_forecast.png')
+# 이미지 저장
+plt.savefig(image_path, dpi=300, bbox_inches='tight')
+# 그래프 창 닫기
+plt.close()
+
+print(f"이미지가 저장되었습니다: {image_path}")

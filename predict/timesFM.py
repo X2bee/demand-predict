@@ -43,29 +43,26 @@ forecast_df = tfm.forecast_on_df(
     num_jobs=-1,
 )
 
-print(forecast_df.columns)
+# 학습 데이터의 마지막 날짜 이후의 예측 결과만 추출합니다.
+max_train_date = train_df['ds'].max()
+forecast_horizon = forecast_df[forecast_df['ds'] > max_train_date]
 
+# 시각화
+plt.figure(figsize=(12, 6))
 
-# # 학습 데이터의 마지막 날짜 이후의 예측 결과만 추출합니다.
-# max_train_date = train_df['ds'].max()
-# forecast_horizon = forecast_df[forecast_df['ds'] > max_train_date]
+# 전체 실제 데이터 (학습 + 테스트)
+plt.plot(df_model['ds'], df_model['y'], label='Actual', marker='o', color='blue')
 
-# # 시각화
-# plt.figure(figsize=(12, 6))
+# TimesFM 예측 결과 (학습 데이터 이후 7일 예측)
+plt.plot(forecast_horizon['ds'], forecast_horizon['timesfm'], label='Forecast', marker='x', linestyle='--', color='red')
 
-# # 전체 실제 데이터 (학습 + 테스트)
-# plt.plot(df_model['ds'], df_model['y'], label='Actual', marker='o', color='blue')
+# 테스트셋의 실제값 (마지막 7일)
+plt.plot(test_df['ds'], test_df['y'], label='Test Actual', marker='s', linestyle='-', color='green')
 
-# # TimesFM 예측 결과 (학습 데이터 이후 7일 예측)
-# plt.plot(forecast_horizon['ds'], forecast_horizon['y_pred'], label='Forecast', marker='x', linestyle='--', color='red')
-
-# # 테스트셋의 실제값 (마지막 7일)
-# plt.plot(test_df['ds'], test_df['y'], label='Test Actual', marker='s', linestyle='-', color='green')
-
-# plt.xlabel('Date')
-# plt.ylabel('Total Order Count')
-# plt.title('TimesFM Forecast vs Actual (Last 7 Days Test)')
-# plt.legend()
-# plt.gcf().autofmt_xdate()
-# plt.tight_layout()
-# plt.show()
+plt.xlabel('Date')
+plt.ylabel('Total Order Count')
+plt.title('TimesFM Forecast vs Actual (Last 7 Days Test)')
+plt.legend()
+plt.gcf().autofmt_xdate()
+plt.tight_layout()
+plt.show()

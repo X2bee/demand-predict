@@ -54,7 +54,7 @@ plt.figure(figsize=(12, 6))
 plt.plot(df_model['ds'], df_model['y'], label='Actual', marker='o', color='blue')
 
 # TimesFM 예측 결과 (학습 데이터 이후 7일 예측)
-plt.plot(forecast_horizon['ds'], forecast_horizon['yhat'], label='Forecast', marker='x', linestyle='--', color='red')
+plt.plot(forecast_horizon['ds'], forecast_horizon['y_pred'], label='Forecast', marker='x', linestyle='--', color='red')
 
 # 테스트셋의 실제값 (마지막 7일)
 plt.plot(test_df['ds'], test_df['y'], label='Test Actual', marker='s', linestyle='-', color='green')

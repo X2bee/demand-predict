@@ -2,12 +2,13 @@ import pandas as pd
 from neuralprophet import NeuralProphet
 import matplotlib.pyplot as plt
 import logging
+import os
 
 # 로그 레벨 설정: DEBUG로 설정하면 상세 로그를 출력합니다.
 logging.basicConfig(level=logging.DEBUG)
 
 # CSV 파일 읽기
-df = pd.read_csv('data_order_cnt.csv')
+df = pd.read_csv('/data/data_order_cnt.csv')
 
 # d_day 컬럼을 datetime 형식으로 변환 (YYYYMMDD 형식)
 df['d_day'] = pd.to_datetime(df['d_day'], format='%Y%m%d')
@@ -58,3 +59,11 @@ plt.legend()
 plt.gcf().autofmt_xdate()
 plt.tight_layout()
 plt.show()
+
+# 현재 스크립트의 디렉토리 경로
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# 이미지 파일 저장 경로
+image_path = os.path.join(current_dir, 'neuralProphet_forecast.png')
+# 이미지 저장
+plt.savefig(image_path, dpi=300, bbox_inches='tight')
+# 그래프 창 닫기

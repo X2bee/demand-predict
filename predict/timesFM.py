@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import timesfm
 
 # CSV 파일 읽기 및 전처리
-df = pd.read_csv('data_order_cnt.csv')
+df = pd.read_csv('../data/data_order_cnt.csv')
 df['d_day'] = pd.to_datetime(df['d_day'], format='%Y%m%d')
 df = df.sort_values('d_day')
 

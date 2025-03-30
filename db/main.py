@@ -2,7 +2,16 @@ import pandas as pd
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import concurrent.futures
-from db.db_connection import engine  # SQLAlchemy 엔진 객체
+import os
+from dotenv import load_dotenv  # 환경 변수를 불러오기 위해 필요합니다
+from db_connection import engine  # SQLAlchemy 엔진 객체
+
+# .env 파일 로드
+load_dotenv()
+
+# 환경 변수에서 스키마 이름 가져오기
+schema = os.environ.get("DB_SCHEMA", "public")  # 기본값은 "public"
+print(f"Using database schema: {schema}")
 
 def fetch_month_data(start_date, month_end):
     """
@@ -15,7 +24,7 @@ def fetch_month_data(start_date, month_end):
                goods_no,
                itm_no,
                COUNT(DISTINCT bsket_no) AS bsket_cnt
-          FROM op_bsket_info
+          FROM {schema}.op_bsket_info
          GROUP BY TO_CHAR(sys_reg_dtm, 'YYYYMMDD'), goods_no, itm_no
     ),
     order_data AS (
@@ -25,7 +34,7 @@ def fetch_month_data(start_date, month_end):
                goods_nm,
                SUM(ord_qty - cncl_qty) AS order_cnt,
                SUM(ord_amt) AS order_amt
-          FROM SM_DAYCL_ORD_AGRT
+          FROM {schema}.SM_DAYCL_ORD_AGRT
          WHERE agrt_gb = '01'
          GROUP BY agrt_dt, goods_no, itm_no, goods_nm
     ),
@@ -34,7 +43,7 @@ def fetch_month_data(start_date, month_end):
                goods_no,
                itm_no,
                SUM(ord_qty - cncl_qty) AS order_non_mem
-          FROM SM_DAYCL_ORD_AGRT
+          FROM {schema}.SM_DAYCL_ORD_AGRT
          WHERE agrt_gb = '01'
            AND mbr_no = '999999999'
          GROUP BY agrt_dt, goods_no, itm_no
@@ -44,7 +53,7 @@ def fetch_month_data(start_date, month_end):
                goods_no,
                itm_no,
                COUNT(DISTINCT claim_no) AS return_cnt
-          FROM op_ord_dtl
+          FROM {schema}.op_ord_dtl
          WHERE ord_dtl_gb_cd = '20'
          GROUP BY TO_CHAR(sys_reg_dtm, 'YYYYMMDD'), goods_no, itm_no
     ),
@@ -53,15 +62,15 @@ def fetch_month_data(start_date, month_end):
                goods_no,
                itm_no,
                COUNT(DISTINCT claim_no) AS exchange_cnt
-          FROM op_ord_dtl
+          FROM {schema}.op_ord_dtl
          WHERE ord_dtl_gb_cd = '30'
          GROUP BY TO_CHAR(sys_reg_dtm, 'YYYYMMDD'), goods_no, itm_no
     ),
     category_info AS (
         SELECT pgb.GOODS_NO,
                psc.STD_CTG_NM
-          FROM PR_GOODS_BASE pgb
-          LEFT JOIN PR_STD_CTG psc ON pgb.STD_CTG_NO = psc.STD_CTG_NO
+          FROM {schema}.PR_GOODS_BASE pgb
+          LEFT JOIN {schema}.PR_STD_CTG psc ON pgb.STD_CTG_NO = psc.STD_CTG_NO
          WHERE pgb.STD_CTG_NO IS NOT NULL
            AND pgb.SALE_STAT_CD = '10'
            AND pgb.DISP_YN = 'Y'
@@ -108,17 +117,17 @@ def fetch_month_data(start_date, month_end):
     products AS (
         SELECT DISTINCT goods_no
         FROM (
-          SELECT fvr_tgt_no AS goods_no FROM CC_PROMO_APLY_INFO
+          SELECT fvr_tgt_no AS goods_no FROM {schema}.CC_PROMO_APLY_INFO
           UNION
-          SELECT goods_no FROM PR_MKDP_GOODS_INFO
+          SELECT goods_no FROM {schema}.PR_MKDP_GOODS_INFO
           UNION
-          SELECT goods_no FROM PR_GOODS_REV_INFO
+          SELECT goods_no FROM {schema}.PR_GOODS_REV_INFO
         ) t
     ),
     promo AS (
         SELECT c.d_day, cpai.fvr_tgt_no AS goods_no
-        FROM CC_PROMO_APLY_INFO cpai
-        JOIN CC_PROM_BASE cpb ON cpai.promo_no = cpb.promo_no
+        FROM {schema}.CC_PROMO_APLY_INFO cpai
+        JOIN {schema}.CC_PROM_BASE cpb ON cpai.promo_no = cpb.promo_no
         CROSS JOIN calendar c
         WHERE cpai.FVR_APLY_GB_CD = '01'
           AND cpai.FVR_APLY_TYP_CD = '02'
@@ -128,9 +137,9 @@ def fetch_month_data(start_date, month_end):
     ),
     display AS (
         SELECT c.d_day, pmgi.goods_no
-        FROM PR_MKDP_BASE pmb
-        JOIN PR_MKDP_DIVOBJ_INFO pmdi ON pmb.mkdp_no = pmdi.mkdp_no
-        JOIN PR_MKDP_GOODS_INFO pmgi ON pmdi.mkdp_no = pmgi.mkdp_no AND pmdi.divobj_no = pmgi.divobj_no
+        FROM {schema}.PR_MKDP_BASE pmb
+        JOIN {schema}.PR_MKDP_DIVOBJ_INFO pmdi ON pmb.mkdp_no = pmdi.mkdp_no
+        JOIN {schema}.PR_MKDP_GOODS_INFO pmgi ON pmdi.mkdp_no = pmgi.mkdp_no AND pmdi.divobj_no = pmgi.divobj_no
         CROSS JOIN calendar c
         WHERE pmb.disp_yn = 'Y'
           AND pmb.del_yn = 'N'
@@ -142,7 +151,7 @@ def fetch_month_data(start_date, month_end):
         SELECT TO_CHAR(sys_reg_dtm, 'YYYYMMDD') AS d_day,
                goods_no,
                COUNT(*) AS review_count
-        FROM PR_GOODS_REV_INFO
+        FROM {schema}.PR_GOODS_REV_INFO
         GROUP BY TO_CHAR(sys_reg_dtm, 'YYYYMMDD'), goods_no
     ),
     second_result AS (
@@ -206,13 +215,33 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         sr, er = future_to_range[future]
         try:
             chunk_df = future.result()
-            all_chunks.append(chunk_df)
+            print(f"결과 데이터 확인: 행 수 = {len(chunk_df)}, 열 수 = {chunk_df.shape[1]}")
+            if not chunk_df.empty:
+                all_chunks.append(chunk_df)
+                print(f"데이터 청크 추가됨: {sr.strftime('%Y-%m-%d')} ~ {er.strftime('%Y-%m-%d')}")
+            else:
+                print(f"주의: {sr.strftime('%Y-%m-%d')} ~ {er.strftime('%Y-%m-%d')} 기간의 데이터가 비어 있습니다")
         except Exception as exc:
-            print(f"Error fetching data from {sr.strftime('%Y-%m-%d')} to {er.strftime('%Y-%m-%d')}: {exc}")
+            import traceback
+            print(f"Error fetching data from {sr.strftime('%Y-%m-%d')} to {er.strftime('%Y-%m-%d')}:")
+            print(traceback.format_exc())  # 상세 오류 메시지 출력
+
+# 리스트가 비어있는지 확인
+print(f"총 수집된 데이터 청크 수: {len(all_chunks)}")
+if len(all_chunks) == 0:
+    print("오류: 데이터가 수집되지 않았습니다. 쿼리와 데이터베이스 연결을 확인하세요.")
+    # 빈 데이터프레임을 생성하여 저장 (선택 사항)
+    empty_df = pd.DataFrame(columns=["d_day", "goods_no", "goods_nm", "STD_CTG_NM", "itm_no", 
+                                      "bsket_cnt", "order_cnt", "order_amt", "order_non_mem", 
+                                      "return_cnt", "exchange_cnt", "promo_active", 
+                                      "display_active", "review_count"])
+    empty_df.to_csv("1years_data_empty.csv", index=False)
+    print("빈 데이터 파일이 생성되었습니다: 1years_data_empty.csv")
+    exit(1)  # 오류 코드와 함께 종료
 
 # 모든 월별 데이터를 하나의 DataFrame으로 결합
 df_all = pd.concat(all_chunks, ignore_index=True)
 
 # 최종 CSV 파일로 저장
-df_all.to_csv("5years_data.csv", index=False)
-print("5년치 데이터 저장 완료. CSV 파일: 5years_data.csv")
+df_all.to_csv("1years_data.csv", index=False)
+print("1년치 데이터 저장 완료. CSV 파일: 1years_data.csv")

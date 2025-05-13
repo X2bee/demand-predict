@@ -79,25 +79,37 @@ test_days = 14
 train_df = df_model.iloc[:-test_days].copy()
 test_df = df_model.iloc[-test_days:].copy()
 
-# TimesFM 모델 초기화 (지원되는 파라미터만 사용)
-tfm = timesfm.TimesFm(
-    hparams=timesfm.TimesFmHparams(
-        backend="torch",             # PyTorch backend 사용
-        per_core_batch_size=32,
-        horizon_len=test_days,       # 예측 기간 14일로 증가
-        input_patch_len=64,          # 더 긴 입력 패치 사용
-        output_patch_len=128,
-        num_layers=50,
-        model_dims=1280,
-        use_positional_embedding=True,  # 포지셔널 임베딩 활성화
-        # 지원되지 않는 매개변수는 제거: learning_rate, dropout_rate
-    ),
-    checkpoint=timesfm.TimesFmCheckpoint(
-        huggingface_repo_id="google/timesfm-2.0-500m-pytorch"
-    ),
-)
+# TimesFM 모델 초기화 - 기본 파라미터만 사용
+try:
+    tfm = timesfm.TimesFm(
+        hparams=timesfm.TimesFmHparams(
+            backend="torch",
+            per_core_batch_size=32,
+            horizon_len=test_days,
+            input_patch_len=64,
+            output_patch_len=128,
+            num_layers=50,
+            model_dims=1280,
+            use_positional_embedding=True
+        ),
+        checkpoint=timesfm.TimesFmCheckpoint(
+            huggingface_repo_id="google/timesfm-2.0-500m-pytorch"
+        ),
+    )
+except Exception as e:
+    print(f"Error initializing TimesFM with default parameters: {e}")
+    print("Trying with minimal parameters...")
+    tfm = timesfm.TimesFm(
+        hparams=timesfm.TimesFmHparams(
+            backend="torch",
+            horizon_len=test_days
+        ),
+        checkpoint=timesfm.TimesFmCheckpoint(
+            huggingface_repo_id="google/timesfm-2.0-500m-pytorch"
+        ),
+    )
 
-# 모델이 학습 시 사용할 수 있는 과거 예시 기간 설정 (더 길게 설정)
+# 모델이 학습 시 사용할 수 있는 과거 예시 기간 설정
 context_length = min(365, len(train_df) - 1)  # 최대 1년 또는 사용 가능한 데이터
 
 # forecast_on_df API를 사용하여 예측 수행
@@ -105,8 +117,7 @@ forecast_df = tfm.forecast_on_df(
     inputs=train_df,
     freq="D",
     value_name="y",
-    num_jobs=-1,
-    # 지원되지 않는 매개변수는 제거: training_months
+    num_jobs=-1
 )
 
 # 앙상블 예측 시도 (다양한 horizon_len 결과 평균화)
@@ -115,27 +126,40 @@ ensemble_forecasts = []
 
 for horizon in horizon_lens:
     print(f"Forecasting with horizon_len={horizon}")
-    tfm_horizon = timesfm.TimesFm(
-        hparams=timesfm.TimesFmHparams(
-            backend="torch",
-            per_core_batch_size=32,
-            horizon_len=horizon,
-            input_patch_len=64,
-            output_patch_len=128,
-            num_layers=50,
-            model_dims=1280,
-            use_positional_embedding=True,
-        ),
-        checkpoint=timesfm.TimesFmCheckpoint(
-            huggingface_repo_id="google/timesfm-2.0-500m-pytorch"
-        ),
-    )
+    try:
+        tfm_horizon = timesfm.TimesFm(
+            hparams=timesfm.TimesFmHparams(
+                backend="torch",
+                per_core_batch_size=32,
+                horizon_len=horizon,
+                input_patch_len=64,
+                output_patch_len=128,
+                num_layers=50,
+                model_dims=1280,
+                use_positional_embedding=True
+            ),
+            checkpoint=timesfm.TimesFmCheckpoint(
+                huggingface_repo_id="google/timesfm-2.0-500m-pytorch"
+            ),
+        )
+    except Exception as e:
+        print(f"Error initializing TimesFM for horizon {horizon}: {e}")
+        print("Using minimal parameters...")
+        tfm_horizon = timesfm.TimesFm(
+            hparams=timesfm.TimesFmHparams(
+                backend="torch",
+                horizon_len=horizon
+            ),
+            checkpoint=timesfm.TimesFmCheckpoint(
+                huggingface_repo_id="google/timesfm-2.0-500m-pytorch"
+            ),
+        )
     
     fcst = tfm_horizon.forecast_on_df(
         inputs=train_df,
         freq="D",
         value_name="y",
-        num_jobs=-1,
+        num_jobs=-1
     )
     
     # 학습 데이터의 마지막 날짜 이후의 예측 결과만 추출

@@ -7,13 +7,25 @@ import torch
 from neuralprophet import NeuralProphet
 from datetime import timedelta
 
-# Check if MPS is available for PyTorch
+# Check for available hardware acceleration
+cuda_available = torch.cuda.is_available()
 mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
-if mps_available:
-    print("MPS (Metal Performance Shaders) is available")
+
+if cuda_available:
+    print("CUDA is available, using GPU for acceleration")
+    device = 'cuda'
+    # Set PyTorch to use CUDA
+    torch.set_default_device('cuda')
+elif mps_available:
+    print("MPS (Metal Performance Shaders) is available, using Apple Silicon GPU")
+    device = 'mps'
+    # Set PyTorch to use MPS
     torch.set_default_device('mps')
 else:
-    print("MPS is not available, using CPU instead")
+    print("No GPU acceleration available, using CPU instead")
+    device = 'cpu'
+
+print(f"Using device: {device}")
 
 # CSV 파일 읽기 및 전처리
 df = pd.read_csv('data_order_cnt.csv')
@@ -80,29 +92,41 @@ test_np = df_np_model.iloc[-test_days:].copy()
 
 # ------ 1. TimesFM 모델 훈련 및 예측 ------
 print("\n=== Training TimesFM Model ===")
-tfm = timesfm.TimesFm(
-    hparams=timesfm.TimesFmHparams(
-        backend="torch",
-        per_core_batch_size=32,
-        horizon_len=forecast_horizon,
-        input_patch_len=64,
-        output_patch_len=128,
-        num_layers=50,
-        model_dims=1280,
-        use_positional_embedding=True,
-        dropout_rate=0.1,
-    ),
-    checkpoint=timesfm.TimesFmCheckpoint(
-        huggingface_repo_id="google/timesfm-2.0-500m-pytorch"
-    ),
-)
+try:
+    tfm = timesfm.TimesFm(
+        hparams=timesfm.TimesFmHparams(
+            backend="torch",
+            per_core_batch_size=32,
+            horizon_len=forecast_horizon,
+            input_patch_len=64,
+            output_patch_len=128,
+            num_layers=50,
+            model_dims=1280,
+            use_positional_embedding=True
+        ),
+        checkpoint=timesfm.TimesFmCheckpoint(
+            huggingface_repo_id="google/timesfm-2.0-500m-pytorch"
+        ),
+    )
+except Exception as e:
+    print(f"Error initializing TimesFM with full parameters: {e}")
+    print("Falling back to minimal parameters...")
+    tfm = timesfm.TimesFm(
+        hparams=timesfm.TimesFmHparams(
+            backend="torch",
+            horizon_len=forecast_horizon
+        ),
+        checkpoint=timesfm.TimesFmCheckpoint(
+            huggingface_repo_id="google/timesfm-2.0-500m-pytorch"
+        ),
+    )
 
 # TimesFM 예측 실행
 forecast_tfm = tfm.forecast_on_df(
     inputs=train_timesfm,
     freq="D",
     value_name="y",
-    num_jobs=-1,
+    num_jobs=-1
 )
 
 # 예측 결과 추출
@@ -131,22 +155,57 @@ forecast_tfm_horizon['timesfm_adjusted'] = forecast_tfm_horizon.apply(
 # ------ 2. NeuralProphet 모델 훈련 및 예측 ------
 print("\n=== Training NeuralProphet Model ===")
 
-model_np = NeuralProphet(
-    growth="linear",              # 선형 성장 가정
-    yearly_seasonality=True,      # 연간 계절성 모델링
-    weekly_seasonality=True,      # 주간 계절성 모델링
-    daily_seasonality=False,      # 일별 계절성은 데이터에 맞지 않음
-    seasonality_mode="multiplicative",   # 곱셈 계절성 (시간에 따라 계절성 진폭이 변함)
-    changepoints_range=0.95,      # 변화점 감지 범위 (훈련 데이터의 95%까지)
-    n_changepoints=25,           # 가능한 변화점 수
-    changepoints_prior_scale=0.05,  # 변화점 탄력성 (낮은 값 = 적은 변화)
-    regularization=0.1,           # 정규화 (과적합 방지)
-    uncertainty_samples=100,      # 불확실성 샘플링 횟수
-)
+# NeuralProphet 모델 설정 - PyTorch 백엔드 사용
+try:
+    if device == 'cuda':
+        # CUDA 환경에서 설정
+        torch_device = torch.device('cuda')
+        model_np = NeuralProphet(
+            growth="linear",
+            yearly_seasonality=True,
+            weekly_seasonality=True,
+            daily_seasonality=False,
+            seasonality_mode="multiplicative",
+            changepoints_range=0.95,
+            n_changepoints=25,
+            changepoints_prior_scale=0.05,
+            regularization=0.1,
+            uncertainty_samples=100,
+            device=torch_device  # 명시적 GPU 사용 설정
+        )
+        print("NeuralProphet using CUDA GPU")
+    else:
+        # CPU 또는 MPS 환경에서 설정 (MPS는 현재 NeuralProphet에서 명시적으로 지원하지 않음)
+        model_np = NeuralProphet(
+            growth="linear",
+            yearly_seasonality=True,
+            weekly_seasonality=True,
+            daily_seasonality=False,
+            seasonality_mode="multiplicative",
+            changepoints_range=0.95,
+            n_changepoints=25,
+            changepoints_prior_scale=0.05,
+            regularization=0.1,
+            uncertainty_samples=100
+        )
+        print("NeuralProphet using CPU")
+except Exception as e:
+    print(f"Error initializing NeuralProphet with full parameters: {e}")
+    print("Falling back to minimal parameters...")
+    model_np = NeuralProphet(
+        yearly_seasonality=True, 
+        weekly_seasonality=True
+    )
 
 # 모델 학습
-metrics_np = model_np.fit(train_np, freq="D", epochs=200, 
-                         learning_rate=0.001, verbose=False)
+try:
+    metrics_np = model_np.fit(train_np, freq="D", epochs=200, 
+                            learning_rate=0.001, verbose=False)
+except Exception as e:
+    print(f"Error during NeuralProphet training: {e}")
+    print("Reducing epochs and retrying...")
+    metrics_np = model_np.fit(train_np, freq="D", epochs=50, 
+                            learning_rate=0.01, verbose=False)
 
 # 미래 예측
 future_np = model_np.make_future_dataframe(train_np, periods=test_days)

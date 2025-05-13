@@ -42,7 +42,7 @@ tfm = timesfm.TimesFm(
         horizon_len=7,             # 예측 기간 7일
         input_patch_len=64,
         output_patch_len=128,
-        num_layers=60,
+        num_layers=50,
         model_dims=1536,
         use_positional_embedding=True,
     ),

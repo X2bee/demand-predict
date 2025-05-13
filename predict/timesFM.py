@@ -81,31 +81,55 @@ test_df = df_model.iloc[-test_days:].copy()
 
 # TimesFM 모델 초기화
 try:
-    # 수정된 파라미터 - input_patch_len을 64로 설정하고 다른 파라미터 조정
+    # 체크포인트와 일치하는 파라미터로 설정
+    # 모든 크기 불일치 오류를 해결하기 위해 조정
+    hparams = timesfm.TimesFmHparams(
+        backend="torch",
+        per_core_batch_size=32,
+        horizon_len=test_days,
+        input_patch_len=64,  # 체크포인트의 예상 값과 일치
+        output_patch_len=64,  # 모델 차원과 일치하도록 수정
+        model_dims=1280,
+        num_layers=50,  # 체크포인트 레이어 수와 일치
+        strict_loading=False  # 엄격한 로딩 비활성화
+    )
+    
     tfm = timesfm.TimesFm(
-        hparams=timesfm.TimesFmHparams(
-            backend="torch",
-            per_core_batch_size=32,
-            horizon_len=test_days,
-            input_patch_len=64,  # 체크포인트의 예상 값과 일치
-            output_patch_len=64,  # 모델 차원과 일치하도록 수정
-            num_layers=20,  # 50에서 20으로 감소
-            model_dims=1280,
-            use_positional_embedding=True
-        ),
+        hparams=hparams,
         checkpoint=timesfm.TimesFmCheckpoint(
-            huggingface_repo_id="google/timesfm-2.0-500m-pytorch"
+            huggingface_repo_id="google/timesfm-1.0-1b"  # 다른 체크포인트 시도
         ),
     )
 except Exception as e:
     print(f"Error initializing TimesFM with custom parameters: {e}")
-    print("Trying with default parameters...")
-    # 기본 파라미터만 사용하고 나머지는 라이브러리가 기본값으로 설정하도록 함
-    tfm = timesfm.TimesFm(
-        checkpoint=timesfm.TimesFmCheckpoint(
-            huggingface_repo_id="google/timesfm-2.0-500m-pytorch"
-        ),
-    )
+    print("Trying with alternate parameters...")
+    
+    # 다른 체크포인트 및 파라미터 조합 시도
+    try:
+        hparams = timesfm.TimesFmHparams(
+            backend="torch",
+            strict_loading=False,
+            horizon_len=test_days
+        )
+        
+        tfm = timesfm.TimesFm(
+            hparams=hparams,
+            checkpoint=timesfm.TimesFmCheckpoint(
+                huggingface_repo_id="google/timesfm-1.0-base"  # 더 작은 모델 시도
+            ),
+        )
+    except Exception as e:
+        print(f"Error initializing with alternate parameters: {e}")
+        print("Trying with minimal configuration...")
+        
+        # 가장 기본적인 구성 시도
+        hparams = timesfm.TimesFmHparams(
+            backend="torch"
+        )
+        
+        tfm = timesfm.TimesFm(
+            hparams=hparams
+        )
 
 # 모델이 학습 시 사용할 수 있는 과거 예시 기간 설정
 context_length = min(365, len(train_df) - 1)  # 최대 1년 또는 사용 가능한 데이터

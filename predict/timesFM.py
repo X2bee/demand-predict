@@ -4,24 +4,9 @@ import timesfm
 import os
 import torch
 
-# Check for available hardware acceleration
-cuda_available = torch.cuda.is_available()
-mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
-
-if cuda_available:
-    print("CUDA is available, using GPU for acceleration")
-    device = 'cuda'
-    # Set PyTorch to use CUDA
-    torch.set_default_device('cuda')
-elif mps_available:
-    print("MPS (Metal Performance Shaders) is available, using Apple Silicon GPU")
-    device = 'mps'
-    # Set PyTorch to use MPS
-    torch.set_default_device('mps')
-else:
-    print("No GPU acceleration available, using CPU instead")
-    device = 'cpu'
-
+# 디바이스 설정: GPU 대신 CPU로 고정 (TimesFM 인덱싱 오류 방지)
+device = 'cpu'
+torch.set_default_device('cpu')
 print(f"Using device: {device}")
 
 # CSV 파일 읽기 및 전처리
@@ -70,14 +55,8 @@ forecast_horizon = forecast_df[forecast_df['ds'] > max_train_date]
 
 # 시각화
 plt.figure(figsize=(12, 6))
-
-# 전체 실제 데이터 (학습 + 테스트)
 plt.plot(df_model['ds'], df_model['y'], label='Actual', marker='o', color='blue')
-
-# TimesFM 예측 결과 (학습 데이터 이후 7일 예측)
 plt.plot(forecast_horizon['ds'], forecast_horizon['timesfm'], label='Forecast', marker='x', linestyle='--', color='red')
-
-# 테스트셋의 실제값 (마지막 7일)
 plt.plot(test_df['ds'], test_df['y'], label='Test Actual', marker='s', linestyle='-', color='green')
 
 plt.xlabel('Date')
@@ -86,15 +65,13 @@ plt.title('TimesFM Forecast vs Actual (Last 7 Days Test)')
 plt.legend()
 plt.gcf().autofmt_xdate()
 plt.tight_layout()
-plt.show()
 
-# 현재 스크립트의 디렉토리 경로
-current_dir = os.path.dirname(os.path.abspath(__file__))
-# 이미지 파일 저장 경로
-image_path = os.path.join(current_dir, 'timesfm_forecast.png')
 # 이미지 저장
+current_dir = os.path.dirname(os.path.abspath(__file__))
+image_path = os.path.join(current_dir, 'timesfm_forecast.png')
 plt.savefig(image_path, dpi=300, bbox_inches='tight')
-# 그래프 창 닫기
-plt.close()
-
 print(f"이미지가 저장되었습니다: {image_path}")
+
+# 그래프 보여주기
+plt.show()
+plt.close()

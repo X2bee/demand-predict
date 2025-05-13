@@ -79,16 +79,17 @@ test_days = 14
 train_df = df_model.iloc[:-test_days].copy()
 test_df = df_model.iloc[-test_days:].copy()
 
-# TimesFM 모델 초기화 - 기본 파라미터만 사용
+# TimesFM 모델 초기화
 try:
+    # 수정된 파라미터 - input_patch_len을 64로 설정하고 다른 파라미터 조정
     tfm = timesfm.TimesFm(
         hparams=timesfm.TimesFmHparams(
             backend="torch",
             per_core_batch_size=32,
             horizon_len=test_days,
-            input_patch_len=64,
-            output_patch_len=128,
-            num_layers=50,
+            input_patch_len=64,  # 체크포인트의 예상 값과 일치
+            output_patch_len=64,  # 모델 차원과 일치하도록 수정
+            num_layers=20,  # 50에서 20으로 감소
             model_dims=1280,
             use_positional_embedding=True
         ),
@@ -97,13 +98,10 @@ try:
         ),
     )
 except Exception as e:
-    print(f"Error initializing TimesFM with default parameters: {e}")
-    print("Trying with minimal parameters...")
+    print(f"Error initializing TimesFM with custom parameters: {e}")
+    print("Trying with default parameters...")
+    # 기본 파라미터만 사용하고 나머지는 라이브러리가 기본값으로 설정하도록 함
     tfm = timesfm.TimesFm(
-        hparams=timesfm.TimesFmHparams(
-            backend="torch",
-            horizon_len=test_days
-        ),
         checkpoint=timesfm.TimesFmCheckpoint(
             huggingface_repo_id="google/timesfm-2.0-500m-pytorch"
         ),
@@ -113,199 +111,112 @@ except Exception as e:
 context_length = min(365, len(train_df) - 1)  # 최대 1년 또는 사용 가능한 데이터
 
 # forecast_on_df API를 사용하여 예측 수행
-forecast_df = tfm.forecast_on_df(
-    inputs=train_df,
-    freq="D",
-    value_name="y",
-    num_jobs=-1
-)
-
-# 앙상블 예측 시도 (다양한 horizon_len 결과 평균화)
-horizon_lens = [test_days, test_days + 7]
-ensemble_forecasts = []
-
-for horizon in horizon_lens:
-    print(f"Forecasting with horizon_len={horizon}")
-    try:
-        tfm_horizon = timesfm.TimesFm(
-            hparams=timesfm.TimesFmHparams(
-                backend="torch",
-                per_core_batch_size=32,
-                horizon_len=horizon,
-                input_patch_len=64,
-                output_patch_len=128,
-                num_layers=50,
-                model_dims=1280,
-                use_positional_embedding=True
-            ),
-            checkpoint=timesfm.TimesFmCheckpoint(
-                huggingface_repo_id="google/timesfm-2.0-500m-pytorch"
-            ),
-        )
-    except Exception as e:
-        print(f"Error initializing TimesFM for horizon {horizon}: {e}")
-        print("Using minimal parameters...")
-        tfm_horizon = timesfm.TimesFm(
-            hparams=timesfm.TimesFmHparams(
-                backend="torch",
-                horizon_len=horizon
-            ),
-            checkpoint=timesfm.TimesFmCheckpoint(
-                huggingface_repo_id="google/timesfm-2.0-500m-pytorch"
-            ),
-        )
-    
-    fcst = tfm_horizon.forecast_on_df(
+try:
+    forecast_df = tfm.forecast_on_df(
         inputs=train_df,
         freq="D",
         value_name="y",
         num_jobs=-1
     )
-    
-    # 학습 데이터의 마지막 날짜 이후의 예측 결과만 추출
+
+    # 학습 데이터의 마지막 날짜 이후의 예측 결과만 추출합니다.
     max_train_date = train_df['ds'].max()
-    horizon_forecast = fcst[fcst['ds'] > max_train_date]
-    ensemble_forecasts.append(horizon_forecast)
+    forecast_horizon = forecast_df[forecast_df['ds'] > max_train_date]
 
-# 학습 데이터의 마지막 날짜 이후의 예측 결과만 추출합니다.
-max_train_date = train_df['ds'].max()
-forecast_horizon = forecast_df[forecast_df['ds'] > max_train_date]
+    # 요일 패턴 활용 - 예측 값 조정
+    forecast_horizon['dayofweek'] = [d.dayofweek for d in forecast_horizon['ds']]
+    forecast_horizon['is_weekend'] = forecast_horizon['dayofweek'].isin([5, 6]).astype(int)
 
-# 앙상블 결과 계산 (사용 가능한 경우)
-if len(ensemble_forecasts) > 1:
-    # 모든 예측의 공통 날짜 찾기
-    common_dates = set(forecast_horizon['ds'])
-    for ef in ensemble_forecasts:
-        common_dates = common_dates.intersection(set(ef['ds']))
-    
-    # 공통 날짜에 대한 앙상블 예측값 계산
-    forecast_horizon_ensemble = forecast_horizon[forecast_horizon['ds'].isin(common_dates)].copy()
-    
-    # 각 모델의 예측값을 합산하여 평균 계산
-    for i, ef in enumerate(ensemble_forecasts):
-        ef_common = ef[ef['ds'].isin(common_dates)]
-        if i == 0:
-            forecast_horizon_ensemble['ensemble'] = ef_common['timesfm']
+    # 요일별 스케일 팩터 계산 (학습 데이터 기반)
+    dow_scale_factors = {}
+    for day in range(7):
+        train_day_avg = df[df['dayofweek'] == day]['total_order_cnt'].mean()
+        train_overall_avg = df['total_order_cnt'].mean()
+        if train_overall_avg > 0 and not np.isnan(train_day_avg):
+            dow_scale_factors[day] = train_day_avg / train_overall_avg
         else:
-            forecast_horizon_ensemble['ensemble'] += ef_common['timesfm']
-    
-    # 평균 계산
-    forecast_horizon_ensemble['ensemble'] /= (len(ensemble_forecasts) + 1)  # 원래 예측 포함
-    forecast_horizon_ensemble['ensemble'] = (forecast_horizon_ensemble['ensemble'] + 
-                                            forecast_horizon_ensemble['timesfm']) / 2
-else:
-    forecast_horizon_ensemble = forecast_horizon
-    forecast_horizon_ensemble['ensemble'] = forecast_horizon_ensemble['timesfm']
+            dow_scale_factors[day] = 1.0
 
-# 요일 패턴 활용 - 예측 값 조정
-all_dates = pd.date_range(start=max_train_date + timedelta(days=1), 
-                         periods=len(forecast_horizon_ensemble))
-forecast_horizon_ensemble['dayofweek'] = [d.dayofweek for d in forecast_horizon_ensemble['ds']]
-forecast_horizon_ensemble['is_weekend'] = forecast_horizon_ensemble['dayofweek'].isin([5, 6]).astype(int)
-
-# 요일별 스케일 팩터 계산 (학습 데이터 기반)
-dow_scale_factors = {}
-for day in range(7):
-    train_day_avg = df[df['dayofweek'] == day]['total_order_cnt'].mean()
-    train_overall_avg = df['total_order_cnt'].mean()
-    if train_overall_avg > 0 and not np.isnan(train_day_avg):
-        dow_scale_factors[day] = train_day_avg / train_overall_avg
-    else:
-        dow_scale_factors[day] = 1.0
-
-# 요일별 스케일 팩터 적용
-forecast_horizon_ensemble['timesfm_adjusted'] = forecast_horizon_ensemble.apply(
-    lambda row: row['timesfm'] * dow_scale_factors.get(row['dayofweek'], 1.0), axis=1
-)
-
-forecast_horizon_ensemble['ensemble_adjusted'] = forecast_horizon_ensemble.apply(
-    lambda row: row['ensemble'] * dow_scale_factors.get(row['dayofweek'], 1.0), axis=1
-)
-
-# 시각화
-plt.figure(figsize=(14, 7))
-
-# 전체 실제 데이터 (학습 + 테스트)
-plt.plot(df_model['ds'], df_model['y'], label='Actual', marker='o', color='blue')
-
-# TimesFM 예측 결과 (학습 데이터 이후 예측)
-plt.plot(forecast_horizon_ensemble['ds'], forecast_horizon_ensemble['timesfm_adjusted'], 
-         label='Forecast (Adjusted)', marker='x', linestyle='--', color='red')
-
-# 앙상블 결과도 표시
-plt.plot(forecast_horizon_ensemble['ds'], forecast_horizon_ensemble['ensemble_adjusted'], 
-         label='Ensemble Forecast', marker='+', linestyle='-.', color='purple')
-
-# 테스트셋의 실제값
-plt.plot(test_df['ds'], test_df['y'], label='Test Actual', marker='s', linestyle='-', color='green')
-
-plt.xlabel('Date')
-plt.ylabel('Total Order Count')
-plt.title('TimesFM Forecast vs Actual (Last {} Days Test)'.format(test_days))
-plt.legend()
-plt.gcf().autofmt_xdate()
-plt.grid(True, linestyle='--', alpha=0.6)
-plt.tight_layout()
-
-# 예측 성능 평가
-def calculate_metrics(actual, predicted):
-    mape = np.mean(np.abs((actual - predicted) / np.maximum(1e-10, np.abs(actual)))) * 100
-    rmse = np.sqrt(np.mean((actual - predicted) ** 2))
-    mae = np.mean(np.abs(actual - predicted))
-    return {'MAPE': mape, 'RMSE': rmse, 'MAE': mae}
-
-# 테스트 데이터와 예측의 공통 날짜 찾기
-common_dates = set(test_df['ds']).intersection(set(forecast_horizon_ensemble['ds']))
-test_common = test_df[test_df['ds'].isin(common_dates)]
-forecast_common = forecast_horizon_ensemble[forecast_horizon_ensemble['ds'].isin(common_dates)]
-
-if not test_common.empty and not forecast_common.empty:
-    # 원래 예측에 대한 측정
-    metrics_original = calculate_metrics(
-        test_common['y'].values, 
-        forecast_common['timesfm'].values
+    # 요일별 스케일 팩터 적용
+    forecast_horizon['timesfm_adjusted'] = forecast_horizon.apply(
+        lambda row: row['timesfm'] * dow_scale_factors.get(row['dayofweek'], 1.0), axis=1
     )
-    
-    # 조정된 예측에 대한 측정
-    metrics_adjusted = calculate_metrics(
-        test_common['y'].values, 
-        forecast_common['timesfm_adjusted'].values
-    )
-    
-    # 앙상블 예측에 대한 측정
-    metrics_ensemble = calculate_metrics(
-        test_common['y'].values, 
-        forecast_common['ensemble_adjusted'].values
-    )
-    
-    print("\nPerformance Metrics (Original):")
-    for k, v in metrics_original.items():
-        print(f"{k}: {v:.2f}")
-    
-    print("\nPerformance Metrics (Adjusted):")
-    for k, v in metrics_adjusted.items():
-        print(f"{k}: {v:.2f}")
-    
-    print("\nPerformance Metrics (Ensemble):")
-    for k, v in metrics_ensemble.items():
-        print(f"{k}: {v:.2f}")
-    
-    # 텍스트로 그래프에 메트릭스 표시
-    metrics_text = (f"MAPE (Adjusted): {metrics_adjusted['MAPE']:.2f}%\n"
-                   f"RMSE (Adjusted): {metrics_adjusted['RMSE']:.2f}\n"
-                   f"MAE (Adjusted): {metrics_adjusted['MAE']:.2f}")
-    
-    plt.annotate(metrics_text, xy=(0.02, 0.02), xycoords='axes fraction',
-                bbox=dict(boxstyle="round,pad=0.5", fc="white", alpha=0.8),
-                fontsize=9)
 
-# 현재 스크립트의 디렉토리 경로
-current_dir = os.path.dirname(os.path.abspath(__file__))
-# 이미지 파일 저장 경로
-image_path = os.path.join(current_dir, 'timesfm_forecast_enhanced.png')
-# 이미지 저장
-plt.savefig(image_path, dpi=300, bbox_inches='tight')
-# 그래프 창 닫기
-plt.close()
+    # 시각화
+    plt.figure(figsize=(14, 7))
 
-print(f"향상된 모델 이미지가 저장되었습니다: {image_path}")
+    # 전체 실제 데이터 (학습 + 테스트)
+    plt.plot(df_model['ds'], df_model['y'], label='Actual', marker='o', color='blue')
+
+    # TimesFM 예측 결과 (학습 데이터 이후 예측)
+    plt.plot(forecast_horizon['ds'], forecast_horizon['timesfm_adjusted'], 
+             label='Forecast (Adjusted)', marker='x', linestyle='--', color='red')
+
+    # 테스트셋의 실제값
+    plt.plot(test_df['ds'], test_df['y'], label='Test Actual', marker='s', linestyle='-', color='green')
+
+    plt.xlabel('Date')
+    plt.ylabel('Total Order Count')
+    plt.title('TimesFM Forecast vs Actual (Last {} Days Test)'.format(test_days))
+    plt.legend()
+    plt.gcf().autofmt_xdate()
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.tight_layout()
+
+    # 예측 성능 평가
+    def calculate_metrics(actual, predicted):
+        mape = np.mean(np.abs((actual - predicted) / np.maximum(1e-10, np.abs(actual)))) * 100
+        rmse = np.sqrt(np.mean((actual - predicted) ** 2))
+        mae = np.mean(np.abs(actual - predicted))
+        return {'MAPE': mape, 'RMSE': rmse, 'MAE': mae}
+
+    # 테스트 데이터와 예측의 공통 날짜 찾기
+    common_dates = set(test_df['ds']).intersection(set(forecast_horizon['ds']))
+    test_common = test_df[test_df['ds'].isin(common_dates)]
+    forecast_common = forecast_horizon[forecast_horizon['ds'].isin(common_dates)]
+
+    if not test_common.empty and not forecast_common.empty:
+        # 원래 예측에 대한 측정
+        metrics_original = calculate_metrics(
+            test_common['y'].values, 
+            forecast_common['timesfm'].values
+        )
+        
+        # 조정된 예측에 대한 측정
+        metrics_adjusted = calculate_metrics(
+            test_common['y'].values, 
+            forecast_common['timesfm_adjusted'].values
+        )
+        
+        print("\nPerformance Metrics (Original):")
+        for k, v in metrics_original.items():
+            print(f"{k}: {v:.2f}")
+        
+        print("\nPerformance Metrics (Adjusted):")
+        for k, v in metrics_adjusted.items():
+            print(f"{k}: {v:.2f}")
+        
+        # 텍스트로 그래프에 메트릭스 표시
+        metrics_text = (f"MAPE (Adjusted): {metrics_adjusted['MAPE']:.2f}%\n"
+                       f"RMSE (Adjusted): {metrics_adjusted['RMSE']:.2f}\n"
+                       f"MAE (Adjusted): {metrics_adjusted['MAE']:.2f}")
+        
+        plt.annotate(metrics_text, xy=(0.02, 0.02), xycoords='axes fraction',
+                    bbox=dict(boxstyle="round,pad=0.5", fc="white", alpha=0.8),
+                    fontsize=9)
+
+    # 현재 스크립트의 디렉토리 경로
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    # 이미지 파일 저장 경로
+    image_path = os.path.join(current_dir, 'timesfm_forecast.png')
+    # 이미지 저장
+    plt.savefig(image_path, dpi=300, bbox_inches='tight')
+    # 그래프 창 닫기
+    plt.close()
+
+    print(f"모델 예측 이미지가 저장되었습니다: {image_path}")
+
+except Exception as e:
+    print(f"Error during forecasting: {e}")
+    import traceback
+    traceback.print_exc()

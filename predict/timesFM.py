@@ -4,14 +4,20 @@ import timesfm
 import os
 import torch
 
-# Check if MPS is available
+# Check if CUDA or MPS is available
+cuda_available = torch.cuda.is_available()
 mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
-if mps_available:
+
+if cuda_available:
+    print("CUDA is available, using GPU for acceleration")
+    # Set PyTorch to use CUDA globally
+    torch.set_default_device('cuda')
+elif mps_available:
     print("MPS (Metal Performance Shaders) is available")
     # Set PyTorch to use MPS globally
     torch.set_default_device('mps')
 else:
-    print("MPS is not available, using CPU instead")
+    print("No GPU acceleration available, using CPU instead")
 
 # CSV 파일 읽기 및 전처리
 df = pd.read_csv('data_order_cnt.csv')
@@ -32,14 +38,13 @@ test_df = df_model.iloc[-7:].copy()
 tfm = timesfm.TimesFm(
     hparams=timesfm.TimesFmHparams(
         backend="torch",             # PyTorch backend 사용
-        per_core_batch_size=32,
+        per_core_batch_size=16,
         horizon_len=7,             # 예측 기간 7일
-        input_patch_len=32,
+        input_patch_len=64,
         output_patch_len=128,
-        num_layers=50,
-        model_dims=1280,
-        use_positional_embedding=False,
-        # device parameter is not supported
+        num_layers=60,
+        model_dims=1536,
+        use_positional_embedding=True,
     ),
     checkpoint=timesfm.TimesFmCheckpoint(
         huggingface_repo_id="google/timesfm-2.0-500m-pytorch"

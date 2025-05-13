@@ -6,14 +6,25 @@ import torch
 import numpy as np
 from datetime import timedelta
 
-# Check if MPS is available
+# Check for available hardware acceleration
+cuda_available = torch.cuda.is_available()
 mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
-if mps_available:
-    print("MPS (Metal Performance Shaders) is available")
-    # Set PyTorch to use MPS globally
+
+if cuda_available:
+    print("CUDA is available, using GPU for acceleration")
+    device = 'cuda'
+    # Set PyTorch to use CUDA
+    torch.set_default_device('cuda')
+elif mps_available:
+    print("MPS (Metal Performance Shaders) is available, using Apple Silicon GPU")
+    device = 'mps'
+    # Set PyTorch to use MPS
     torch.set_default_device('mps')
 else:
-    print("MPS is not available, using CPU instead")
+    print("No GPU acceleration available, using CPU instead")
+    device = 'cpu'
+
+print(f"Using device: {device}")
 
 # CSV 파일 읽기 및 전처리
 df = pd.read_csv('data_order_cnt.csv')
@@ -68,7 +79,7 @@ test_days = 14
 train_df = df_model.iloc[:-test_days].copy()
 test_df = df_model.iloc[-test_days:].copy()
 
-# TimesFM 모델 초기화 (향상된 파라미터)
+# TimesFM 모델 초기화 (지원되는 파라미터만 사용)
 tfm = timesfm.TimesFm(
     hparams=timesfm.TimesFmHparams(
         backend="torch",             # PyTorch backend 사용
@@ -79,8 +90,7 @@ tfm = timesfm.TimesFm(
         num_layers=50,
         model_dims=1280,
         use_positional_embedding=True,  # 포지셔널 임베딩 활성화
-        learning_rate=1e-5,            # 더 작은 학습율로 세밀한 학습
-        dropout_rate=0.1,              # 과적합 방지를 위한 드롭아웃 추가
+        # 지원되지 않는 매개변수는 제거: learning_rate, dropout_rate
     ),
     checkpoint=timesfm.TimesFmCheckpoint(
         huggingface_repo_id="google/timesfm-2.0-500m-pytorch"
@@ -96,7 +106,7 @@ forecast_df = tfm.forecast_on_df(
     freq="D",
     value_name="y",
     num_jobs=-1,
-    training_months=max(12, context_length // 30),  # 학습에 사용할 과거 개월 수
+    # 지원되지 않는 매개변수는 제거: training_months
 )
 
 # 앙상블 예측 시도 (다양한 horizon_len 결과 평균화)
@@ -215,7 +225,7 @@ plt.tight_layout()
 
 # 예측 성능 평가
 def calculate_metrics(actual, predicted):
-    mape = np.mean(np.abs((actual - predicted) / actual)) * 100
+    mape = np.mean(np.abs((actual - predicted) / np.maximum(1e-10, np.abs(actual)))) * 100
     rmse = np.sqrt(np.mean((actual - predicted) ** 2))
     mae = np.mean(np.abs(actual - predicted))
     return {'MAPE': mape, 'RMSE': rmse, 'MAE': mae}

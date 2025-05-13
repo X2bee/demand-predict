@@ -2,9 +2,19 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import timesfm
 import os
+import torch
+
+# Check if MPS is available
+mps_available = hasattr(torch, 'mps') and torch.backends.mps.is_available()
+if mps_available:
+    print("MPS (Metal Performance Shaders) is available")
+    # Set PyTorch to use MPS globally
+    torch.set_default_device('mps')
+else:
+    print("MPS is not available, using CPU instead")
 
 # CSV 파일 읽기 및 전처리
-df = pd.read_csv('../data/data_order_cnt.csv')
+df = pd.read_csv('data_order_cnt.csv')
 df['d_day'] = pd.to_datetime(df['d_day'], format='%Y%m%d')
 df = df.sort_values('d_day')
 
@@ -23,12 +33,13 @@ tfm = timesfm.TimesFm(
     hparams=timesfm.TimesFmHparams(
         backend="torch",             # PyTorch backend 사용
         per_core_batch_size=32,
-        horizon_len=7,             # 기본 horizon은 128로 설정되어 있음 (예측 시 별도 horizon_len 인자로 재지정 가능)
+        horizon_len=7,             # 예측 기간 7일
         input_patch_len=32,
         output_patch_len=128,
         num_layers=50,
         model_dims=1280,
         use_positional_embedding=False,
+        # device parameter is not supported
     ),
     checkpoint=timesfm.TimesFmCheckpoint(
         huggingface_repo_id="google/timesfm-2.0-500m-pytorch"
@@ -36,7 +47,6 @@ tfm = timesfm.TimesFm(
 )
 
 # forecast_on_df API를 사용하여 예측 수행
-# horizon_len=7로 지정하여, 학습 데이터 이후 7일의 예측을 수행합니다.
 forecast_df = tfm.forecast_on_df(
     inputs=train_df,
     freq="D",

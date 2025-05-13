@@ -8,7 +8,7 @@ import os
 logging.basicConfig(level=logging.DEBUG)
 
 # CSV 파일 읽기
-df = pd.read_csv('../data/data_order_cnt.csv')
+df = pd.read_csv('data_order_cnt.csv')
 
 # d_day 컬럼을 datetime 형식으로 변환 (YYYYMMDD 형식)
 df['d_day'] = pd.to_datetime(df['d_day'], format='%Y%m%d')

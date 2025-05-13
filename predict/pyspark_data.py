@@ -14,7 +14,7 @@ spark = SparkSession.builder \
 # CSV 파일 읽기
 df = spark.read.option("header", "true") \
                .option("inferSchema", "true") \
-               .csv("5years_data.csv")
+               .csv("1years_data.csv")
 
 # 날짜별 전체 주문 건수와 주문 금액 집계
 df_ord = df.groupBy("d_day").agg(

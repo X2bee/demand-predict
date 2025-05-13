@@ -43,7 +43,7 @@ tfm = timesfm.TimesFm(
         input_patch_len=64,
         output_patch_len=128,
         num_layers=50,
-        model_dims=1536,
+        model_dims=1280,
         use_positional_embedding=True,
     ),
     checkpoint=timesfm.TimesFmCheckpoint(

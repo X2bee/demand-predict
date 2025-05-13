@@ -79,12 +79,11 @@ test_days = 14
 train_df = df_model.iloc[:-test_days].copy()
 test_df = df_model.iloc[-test_days:].copy()
 
-# 사용 가능한 모델 체크포인트 목록
+# 사용 가능한 모델 체크포인트 목록 (Hugging Face에 실제 존재하는 것들만)
 checkpoint_options = [
-    "google/timesfm-1.0-base",
-    "google/timesfm-1.0-1b", 
-    "google/timesfm-2.0-500m",
-    "google/timesfm-2.0-500m-pytorch"
+    "google/timesfm-2.0-500m-pytorch",  # PyTorch 버전
+    "google/timesfm-2.0-500m",          # JAX 버전
+    "google/timesfm-2.0-17b"            # 대규모 버전
 ]
 
 # TimesFM 모델 초기화
@@ -98,9 +97,7 @@ for checkpoint_id in checkpoint_options:
             per_core_batch_size=32,
             horizon_len=test_days,
             input_patch_len=64,
-            output_patch_len=64,
-            model_dims=1280,
-            num_layers=20
+            output_patch_len=64
         )
         
         tfm = timesfm.TimesFm(
@@ -115,22 +112,28 @@ for checkpoint_id in checkpoint_options:
     except Exception as e:
         print(f"Error with checkpoint {checkpoint_id}: {e}")
 else:
-    # 모든 체크포인트가 실패한 경우 가장 기본적인 구성 시도
+    # 모든 체크포인트가 실패한 경우, 다운로드 가능 여부 확인
+    print("\nAll checkpoints failed to load. Checking if models are available...")
+
     try:
-        print("Trying with minimal configuration...")
+        # 로컬에서 간단한 모델을 사용
+        print("Creating a simple model without pre-trained checkpoint...")
+        
+        # 최소 구성의 TimesFM 모델 생성
         hparams = timesfm.TimesFmHparams(
             backend="torch",
-            horizon_len=test_days
+            horizon_len=test_days,
+            input_patch_len=64,
+            output_patch_len=64,
+            model_dims=128,  # 작은 크기로 설정
+            num_layers=2      # 최소 레이어 수
         )
         
-        tfm = timesfm.TimesFm(
-            hparams=hparams,
-            checkpoint=timesfm.TimesFmCheckpoint(
-                huggingface_repo_id="google/timesfm-1.0-200m"
-            )
-        )
+        tfm = timesfm.TimesFm(hparams=hparams)
+        print("Created basic model for training from scratch.")
+        
     except Exception as e:
-        print(f"Failed to initialize model: {e}")
+        print(f"Failed to initialize any model: {e}")
         # 스크립트 종료 전 예외 정보 출력
         import traceback
         traceback.print_exc()

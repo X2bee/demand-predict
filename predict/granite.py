@@ -3,13 +3,22 @@ import numpy as np
 import pandas as pd
 import torch
 import matplotlib.pyplot as plt
-from transformers import set_seed
+from transformers import set_seed, EarlyStoppingCallback, Trainer, TrainingArguments
 import requests
+import math
 from datetime import datetime
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import OneCycleLR
+from torch.utils.data import Subset
 from tsfm_public import (
     TimeSeriesPreprocessor, TinyTimeMixerForPrediction,
-    TimeSeriesForecastingPipeline
+    TimeSeriesForecastingPipeline, ForecastDFDataset,
+    TrackingCallback, count_parameters
 )
+from tsfm_public.toolkit.lr_finder import optimal_lr_finder
+from tsfm_public.toolkit.time_series_preprocessor import prepare_data_splits
+from tsfm_public.toolkit.util import select_by_timestamp
+from tsfm_public.toolkit.visualization import plot_predictions
 
 # 설정
 context_length = 90  # 더 긴 컨텍스트 사용 (원래 40)
@@ -56,52 +65,12 @@ def get_korean_holidays(year):
                         holidays.append(str(items['item']['locdate']))
                     
                     return holidays
-            
-            # 데이터가 없거나 구조가 다른 경우
-            print(f"API에서 휴일 데이터를 찾을 수 없습니다: {json_data}")
-            # 수동으로 주요 공휴일 추가
-            return manual_holiday_list(year)
         
         else:
             print(f"API 요청 실패: {response.status_code}")
-            return manual_holiday_list(year)
             
     except Exception as e:
         print(f"공휴일 데이터 가져오기 오류: {e}")
-        return manual_holiday_list(year)
-
-def manual_holiday_list(year):
-    """API 호출 실패 시 수동으로 주요 공휴일 목록 생성"""
-    print(f"{year}년 공휴일 데이터를 수동으로 생성합니다.")
-    
-    # 연도별 주요 공휴일 수동 정의 (고정 휴일만)
-    holidays = []
-    
-    # 신정 (1월 1일)
-    holidays.append(f"{year}0101")
-    
-    # 삼일절 (3월 1일)
-    holidays.append(f"{year}0301")
-    
-    # 어린이날 (5월 5일)
-    holidays.append(f"{year}0505")
-    
-    # 현충일 (6월 6일)
-    holidays.append(f"{year}0606")
-    
-    # 광복절 (8월 15일)
-    holidays.append(f"{year}0815")
-    
-    # 개천절 (10월 3일)
-    holidays.append(f"{year}1003")
-    
-    # 한글날 (10월 9일)
-    holidays.append(f"{year}1009")
-    
-    # 크리스마스 (12월 25일)
-    holidays.append(f"{year}1225")
-    
-    return holidays
 
 # 1. CSV 불러오기 및 전처리
 df = pd.read_csv("../data_order_cnt.csv")
@@ -198,6 +167,8 @@ test_data = df.iloc[-forecast_length:].copy()
 print(f"훈련 데이터 크기: {len(train_data)}")
 print(f"테스트 데이터 크기: {len(test_data)}")
 print(f"테스트 데이터 주말/휴일 수: {test_data['is_offday'].sum()}")
+
+print("train_data.head()", train_data.head())
 
 # 2. Preprocessor 정의
 tsp = TimeSeriesPreprocessor(
@@ -392,3 +363,223 @@ else:
     print("예측값 추출 실패: 예측 결과가 유효한 배열이 아니거나 길이가 충분하지 않습니다.")
 
 print("예측 완료.")
+
+# 10. 모델 파인튜닝 (Few-shot Fine-tuning)
+print("\n\n======== 모델 파인튜닝 시작 ========\n")
+
+# 파인튜닝 설정
+do_finetune = True  # 파인튜닝 여부
+fewshot_fraction = 0.20  # 데이터의 20%만 사용 (Few-shot 설정)
+num_epochs = 50
+batch_size = 64
+OUT_DIR = "ttm_finetuned_models/"
+os.makedirs(OUT_DIR, exist_ok=True)
+
+if do_finetune:
+    # 데이터 분할 비율 조정 (train 비율 낮추기)
+    split_params = {"train": 0.5, "test": 0.2}  # 나머지 0.3은 검증 세트로
+    
+    print("데이터 분할 준비 중...")
+    train_data_full, valid_data, test_data_ft = prepare_data_splits(
+        df, id_columns=["state_id"], split_config=split_params, context_length=context_length
+    )
+    
+    # 분할 후 데이터셋 길이 확인 및 로깅 추가
+    print(f"분할된 데이터 크기 - 훈련: {len(train_data_full)}, 검증: {len(valid_data)}, 테스트: {len(test_data_ft)}")
+
+    # 데이터 유효성 검사 추가
+    if len(valid_data) == 0:
+        print("검증 데이터가 비어있습니다. 분할 비율을 조정합니다.")
+        # 검증 데이터가 없는 경우 훈련 데이터에서 일부 가져오기
+        valid_data = train_data_full.sample(frac=0.3)
+        train_data_full = train_data_full.drop(valid_data.index)
+    
+    # 모델이 사용하는 주파수 토큰 가져오기
+    frequency_token = trained_tsp.get_frequency_token(trained_tsp.freq)
+    
+    # 데이터셋 파라미터 설정
+    dataset_params = {
+        "timestamp_column": "date",
+        "id_columns": ["state_id"],
+        "target_columns": ["sales"],
+        "frequency_token": frequency_token,
+        "context_length": context_length,
+        "prediction_length": forecast_length,
+    }
+    
+    # 전처리된 데이터로 토치 데이터셋 생성
+    print("데이터셋 생성 중...")
+    train_dataset = ForecastDFDataset(trained_tsp.preprocess(train_data_full), **dataset_params)
+    valid_dataset = ForecastDFDataset(trained_tsp.preprocess(valid_data), **dataset_params)
+    test_dataset_ft = ForecastDFDataset(trained_tsp.preprocess(test_data_ft), **dataset_params)
+    
+    # Few-shot 학습을 위한 데이터 샘플링
+    print(f"Few-shot 학습을 위한 데이터 샘플링 ({fewshot_fraction*100}%)...")
+    n_train_all = len(train_dataset)
+    train_index = np.random.permutation(n_train_all)[:int(fewshot_fraction * n_train_all)]
+    train_dataset = Subset(train_dataset, train_index)
+    
+    n_valid_all = len(valid_dataset)
+    valid_index = np.random.permutation(n_valid_all)[:int(fewshot_fraction * n_valid_all)]
+    valid_dataset = Subset(valid_dataset, valid_index)
+    
+    print(f"전체 학습 데이터: {n_train_all}, Few-shot 학습 데이터: {len(train_dataset)}")
+    print(f"전체 검증 데이터: {n_valid_all}, Few-shot 검증 데이터: {len(valid_dataset)}")
+    
+    # 파인튜닝을 위한 모델 로드
+    print("파인튜닝을 위한 모델 로드 중...")
+    finetune_model = TinyTimeMixerForPrediction.from_pretrained(
+        TTM_MODEL_PATH,
+        revision=REVISION,
+        context_length=context_length,
+        prediction_filter_length=forecast_length,
+        num_input_channels=trained_tsp.num_input_channels,
+        decoder_mode="mix_channel",  # 채널 믹싱 사용
+        prediction_channel_indices=trained_tsp.prediction_channel_indices,
+        exogenous_channel_indices=trained_tsp.exogenous_channel_indices,
+        fcm_context_length=1,  # 외부 변수 융합에 사용할 시차 길이
+        fcm_use_mixer=True,  # 외부 변수 믹싱 활성화
+        fcm_mix_layers=2,  # 외부 변수 믹싱 레이어 수
+        enable_forecast_channel_mixing=True,  # 예측 채널 믹싱 활성화
+        fcm_prepend_past=True,  # 외부 변수 주입시 과거 데이터 포함
+    )
+    
+    # 백본 동결 여부 설정 (선택적)
+    freeze_backbone = False
+    if freeze_backbone:
+        print(f"백본 동결 전 파라미터 수: {count_parameters(finetune_model)}")
+        # 모델의 백본 부분을 고정
+        for param in finetune_model.backbone.parameters():
+            param.requires_grad = False
+        print(f"백본 동결 후 파라미터 수: {count_parameters(finetune_model)}")
+    
+    # 최적의 학습률 찾기
+    print("최적의 학습률 찾는 중...")
+    learning_rate, finetune_model = optimal_lr_finder(
+        finetune_model,
+        train_dataset,
+        batch_size=batch_size,
+        enable_prefix_tuning=True,
+    )
+    print(f"최적 학습률: {learning_rate}")
+    
+    # 트레이너 설정
+    print("트레이너 설정 중...")
+    finetune_args = TrainingArguments(
+        output_dir=os.path.join(OUT_DIR, "output"),
+        overwrite_output_dir=True,
+        learning_rate=learning_rate,
+        num_train_epochs=num_epochs,
+        do_eval=True,
+        eval_strategy="epoch",
+        per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=2 * batch_size,
+        dataloader_num_workers=1,
+        report_to="none",
+        save_strategy="epoch",
+        logging_strategy="epoch",
+        save_total_limit=1,
+        logging_dir=os.path.join(OUT_DIR, "logs"),
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
+        use_cpu=device == "cpu",
+    )
+    
+    # 조기 종료 콜백 및 트래킹 콜백 설정
+    early_stopping = EarlyStoppingCallback(
+        early_stopping_patience=10,
+        early_stopping_threshold=0.0,
+    )
+    tracking_callback = TrackingCallback()
+    
+    # 옵티마이저 및 스케줄러 설정
+    optimizer = AdamW(finetune_model.parameters(), lr=learning_rate)
+    scheduler = OneCycleLR(
+        optimizer,
+        learning_rate,
+        epochs=num_epochs,
+        steps_per_epoch=math.ceil(len(train_dataset) / batch_size),
+    )
+    
+    # 트레이너 생성
+    finetune_trainer = Trainer(
+        model=finetune_model,
+        args=finetune_args,
+        train_dataset=train_dataset,
+        eval_dataset=valid_dataset,
+        callbacks=[early_stopping, tracking_callback],
+        optimizers=(optimizer, scheduler),
+    )
+    
+    # 모델 파인튜닝 시작
+    print("파인튜닝 시작...")
+    finetune_trainer.train()
+    
+    # 파인튜닝된 모델 평가
+    print("파인튜닝된 모델 평가 중...")
+    eval_results = finetune_trainer.evaluate(test_dataset_ft)
+    print(f"평가 결과: {eval_results}")
+    
+    # 파인튜닝된 모델로 예측 수행
+    print("파인튜닝된 모델로 예측 수행 중...")
+    finetune_pipeline = TimeSeriesForecastingPipeline(
+        model=finetune_model,
+        feature_extractor=trained_tsp,
+        device=device,
+        batch_size=batch_size,
+        pad_context=True
+    )
+    
+    # 테스트 데이터에 대한 예측
+    finetune_forecast = finetune_pipeline(test_data_ft)
+    
+    # 성능 평가 함수 정의
+    def custom_metric(actual, prediction, column_header="results"):
+        """MSE, RMSE, MAE를 계산하는 함수"""
+        a = np.asarray(actual.tolist())
+        p = np.asarray(prediction.tolist())
+        if p.shape[1] < a.shape[1]:
+            a = a[:, : p.shape[1]]
+        
+        mask = ~np.any(np.isnan(a), axis=1)
+        
+        mse = np.mean(np.square(a[mask, :] - p[mask, :]))
+        mae = np.mean(np.abs(a[mask, :] - p[mask, :]))
+        return pd.DataFrame(
+            {
+                column_header: {
+                    "mean_squared_error": mse,
+                    "root_mean_squared_error": np.sqrt(mse),
+                    "mean_absolute_error": mae,
+                }
+            }
+        )
+    
+    # 파인튜닝된 모델의 성능 지표 계산
+    metrics = custom_metric(finetune_forecast["sales"], finetune_forecast["sales_prediction"], "파인튜닝된 모델 예측")
+    print("파인튜닝된 모델 성능 지표:")
+    print(metrics)
+    
+    # 예측 결과 시각화
+    print("파인튜닝된 모델 예측 결과 시각화...")
+    # 시각화 수행 (첫 번째 state_id에 대해서만)
+    first_state = finetune_forecast["state_id"].unique()[0]
+    plot_predictions(
+        input_df=test_data_ft[test_data_ft.state_id == first_state],
+        predictions_df=finetune_forecast[finetune_forecast.state_id == first_state],
+        freq="d",
+        timestamp_column="date",
+        channel="sales",
+    )
+    
+    # 이미지 저장
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    ft_image_path = os.path.join(current_dir, 'granite_finetuned_forecast.png')
+    plt.savefig(ft_image_path, dpi=300, bbox_inches='tight')
+    print(f"파인튜닝된 모델 예측 이미지가 저장되었습니다: {ft_image_path}")
+    
+    # 그래프 표시
+    plt.show()
+    
+    print("\n======== 모델 파인튜닝 완료 ========\n")

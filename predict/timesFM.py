@@ -166,7 +166,9 @@ def get_batched_data_fn(batch_size=32, context_len=32, horizon_len=7):
         sub_df = df_model[df_model["unique_id"] == unique_id]
         sub_df = sub_df.sort_values('ds')
         
-        for start in range(0, len(sub_df) - (context_len + horizon_len), horizon_len):
+        # 마지막 배치만 생성 (테스트 기간에 해당하는 배치)
+        start = len(sub_df) - (context_len + horizon_len)
+        if start >= 0:  # 충분한 데이터가 있는지 확인
             num_examples += 1
             context_end = start + context_len
             
@@ -175,11 +177,13 @@ def get_batched_data_fn(batch_size=32, context_len=32, horizon_len=7):
             examples["is_offday"].append(sub_df["is_offday"][start:context_end + horizon_len].tolist())
             examples["outputs"].append(sub_df["y"][context_end:context_end + horizon_len].tolist())
             
-            print("examples", examples)
+            print(f"생성된 예측 배치: 학습 구간 {sub_df['ds'][start]} ~ {sub_df['ds'][context_end-1]}, 예측 구간 {sub_df['ds'][context_end]} ~ {sub_df['ds'][context_end+horizon_len-1]}")
     
     def data_fn():
         for i in range(1 + (num_examples - 1) // batch_size):
-            yield {k: v[(i * batch_size) : ((i + 1) * batch_size)] for k, v in examples.items()}
+            batch = {k: v[(i * batch_size) : ((i + 1) * batch_size)] for k, v in examples.items()}
+            if batch["inputs"]:  # 빈 배치가 아닌 경우에만 반환
+                yield batch
     
     return data_fn
 
@@ -195,19 +199,26 @@ input_data = get_batched_data_fn(
 # 3. Covariates를 활용한 예측 실행
 metrics = defaultdict(list)
 cov_forecasts = []
+raw_forecasts = []
 has_valid_covariates = False
 
 for i, example in enumerate(input_data()):
     if len(example["inputs"]) == 0:
         continue
-        
+    
+    print(f"\n배치 {i+1} 처리 중 - 입력 데이터 {len(example['inputs'])}개...")
+    
+    start_time = time.time()
+    
     # 기본 TimesFM 예측
     raw_forecast, _ = tfm.forecast(
         inputs=example["inputs"], 
         freq=[0] * len(example["inputs"])
     )
     
-    start_time = time.time()
+    # 예측값이 음수인 경우 0으로 보정
+    raw_forecast_clipped = np.maximum(raw_forecast[:, :horizon_len], 0)
+    raw_forecasts.append(raw_forecast_clipped)
     
     try:
         # Covariates를 활용한 예측 - is_offday만 사용
@@ -235,7 +246,15 @@ for i, example in enumerate(input_data()):
             contains_nan = np.isnan(np.array(cov_forecast)).any()
             
         if not contains_nan:
+            # 예측값이 음수인 경우 0으로 보정
+            if isinstance(cov_forecast, list):
+                cov_forecast = [np.maximum(cf, 0) for cf in cov_forecast]
+            else:
+                cov_forecast = np.maximum(cov_forecast, 0)
+                
             has_valid_covariates = True
+            cov_forecasts.append(cov_forecast)
+            
             metrics["eval_mae_xreg_timesfm"].extend(
                 mae(cov_forecast, example["outputs"])
             )
@@ -248,10 +267,6 @@ for i, example in enumerate(input_data()):
             metrics["eval_mse_xreg"].extend(
                 mse(ols_forecast, example["outputs"])
             )
-            
-            # 마지막 배치의 예측 값 저장 (시각화용)
-            if i == len(list(input_data())) - 1:
-                cov_forecasts = cov_forecast if isinstance(cov_forecast, list) else cov_forecast.tolist()
         else:
             print(f"\n주의: 배치 {i}에서 NaN 값 발견, 이 배치는 건너뜁니다.")
     except Exception as e:
@@ -266,8 +281,7 @@ for i, example in enumerate(input_data()):
     )
     
     print(
-        f"\r배치 {i} 처리 완료, 소요 시간: {time.time() - start_time:.2f}초",
-        end="",
+        f"배치 {i+1} 처리 완료, 소요 시간: {time.time() - start_time:.2f}초"
     )
 
 print("\n\n모델 평가 지표:")
@@ -286,18 +300,25 @@ plt.plot(df_model['ds'], df_model['y'], label='Actual', marker='o', color='blue'
 # 테스트 기간 데이터 (실제값) 강조
 plt.plot(test_df['ds'], test_df['y'], label='Test Actual', color='forestgreen', marker='s', linewidth=2, markersize=6)
 
-# Covariates 적용 예측 결과 (마지막 배치의 예측 결과 사용)
+# 예측 결과 시각화
+if raw_forecasts:
+    # 기본 TimesFM 예측 결과
+    raw_pred = raw_forecasts[0][0]  # 첫 번째 배치의 첫 번째 예측 결과
+    plt.plot(test_df['ds'], raw_pred, 
+             label='TimesFM', marker='x', linestyle='--', color='red', markersize=6)
+
+# Covariates 적용 예측 결과
 if cov_forecasts and has_valid_covariates:
     try:
-        # 마지막 배치의 예측 결과를 테스트 기간에 매핑
-        cov_preds = cov_forecasts[0][:horizon_len] if isinstance(cov_forecasts[0], list) else cov_forecasts[:horizon_len]
+        # 첫 번째 배치의 첫 번째 예측 결과
+        if isinstance(cov_forecasts[0], list):
+            cov_pred = cov_forecasts[0][0]  
+        else:
+            cov_pred = cov_forecasts[0][0]
         
         # NaN 값 확인 및 처리
-        if not np.isnan(np.array(cov_preds)).any():
-            # 음수 예측값을 0으로 보정 (주문량은 음수가 될 수 없음)
-            cov_preds = np.maximum(cov_preds, 0)
-            # label은 한 번만 표시되도록 설정
-            plt.plot(test_df['ds'], cov_preds, 
+        if not np.isnan(np.array(cov_pred)).any():
+            plt.plot(test_df['ds'], cov_pred, 
                      label='TimesFM+Offday', marker='D', linestyle=':', color='magenta', linewidth=2, markersize=6)
         else:
             print("경고: Covariates 예측 결과에 NaN 값이 포함되어 있어 그래프에 표시하지 않습니다.")

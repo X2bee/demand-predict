@@ -292,6 +292,7 @@ if cov_forecasts and has_valid_covariates:
         
         # NaN 값 확인 및 처리
         if not np.isnan(np.array(cov_preds)).any():
+            # label은 한 번만 표시되도록 설정
             plt.plot(test_df['ds'], cov_preds, 
                      label='TimesFM+Offday', marker='D', linestyle=':', color='magenta', linewidth=2, markersize=6)
         else:

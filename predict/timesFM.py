@@ -300,12 +300,15 @@ plt.plot(df_model['ds'], df_model['y'], label='Actual', marker='o', color='blue'
 # 테스트 기간 데이터 (실제값) 강조
 plt.plot(test_df['ds'], test_df['y'], label='Test Actual', color='forestgreen', marker='s', linewidth=2, markersize=6)
 
-# 예측 결과 시각화
-if raw_forecasts:
-    # 기본 TimesFM 예측 결과
-    raw_pred = raw_forecasts[0][0]  # 첫 번째 배치의 첫 번째 예측 결과
-    plt.plot(test_df['ds'], raw_pred, 
-             label='TimesFM', marker='x', linestyle='--', color='red', markersize=6)
+# 단순 과거 평균 예측 (History Predict)
+# 평일과 휴일 구분하여 평균 계산
+weekday_avg = df[df['is_offday'] == 0]['total_order_cnt'].mean()
+offday_avg = df[df['is_offday'] == 1]['total_order_cnt'].mean()
+
+# 테스트 기간의 평일/휴일 구분에 따라 평균값 적용
+history_pred = [offday_avg if x == 1 else weekday_avg for x in test_df['is_offday']]
+plt.plot(test_df['ds'], history_pred, label='History Predict', 
+         marker='^', linestyle='-.', color='orange', linewidth=2, markersize=6)
 
 # Covariates 적용 예측 결과
 if cov_forecasts and has_valid_covariates:
@@ -346,9 +349,13 @@ plt.xlabel('Date', fontsize=12, fontweight='bold')
 plt.ylabel('Total Order Count', fontsize=12, fontweight='bold')
 plt.title('TimesFM Forecast with Offday Covariate', fontsize=16, fontweight='bold')
 
-# 범례 설정 - 중복 제거
+# 범례 설정 - 중복 제거 및 원하는 항목만 표시
 handles, labels = plt.gca().get_legend_handles_labels()
-by_label = dict(zip(labels, handles))
+by_label = {}
+# 원하는 레이블만 선택
+for handle, label in zip(handles, labels):
+    if label not in ['TimesFM']:  # TimesFM 범례 제외
+        by_label[label] = handle
 plt.legend(by_label.values(), by_label.keys(), loc='upper right', fontsize=10, framealpha=0.9)
 
 # 그래프 스타일 설정

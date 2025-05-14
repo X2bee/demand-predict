@@ -174,6 +174,8 @@ def get_batched_data_fn(batch_size=32, context_len=32, horizon_len=7):
             examples["inputs"].append(sub_df["y"][start:context_end].tolist())
             examples["is_offday"].append(sub_df["is_offday"][start:context_end + horizon_len].tolist())
             examples["outputs"].append(sub_df["y"][context_end:context_end + horizon_len].tolist())
+            
+            print("examples", examples)
     
     def data_fn():
         for i in range(1 + (num_examples - 1) // batch_size):

@@ -11,9 +11,9 @@ import time
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 # 디바이스 설정: GPU 대신 CPU로 고정 (TimesFM 인덱싱 오류 방지)
-device = 'cuda'
-torch.set_default_device('cuda')
-print(f"Using device: {device}")
+device = 'cpu'  # CUDA에서 인덱싱 오류가 발생하므로 CPU로 강제 변경
+torch.set_default_device('cpu')
+print(f"Using device: {device} (TimesFM는 GPU 인덱싱 이슈로 CPU만 지원)")
 
 # 한국 공휴일 API 함수
 def get_korean_holidays(year):
@@ -249,7 +249,7 @@ for i, example in enumerate(input_data()):
         freq=[0] * len(example["inputs"]),
         xreg_mode="xreg + timesfm",           # default
         ridge=0.0,
-        force_on_cpu=False,
+        force_on_cpu=True,                   # CPU 강제 사용으로 변경
         normalize_xreg_target_per_input=True,  # default
     )
     

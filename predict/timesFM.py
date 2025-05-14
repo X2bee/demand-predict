@@ -9,8 +9,6 @@ from datetime import datetime
 from collections import defaultdict
 import time
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from scipy.signal import savgol_filter
-from scipy.interpolate import interp1d
 
 # 디바이스 설정: GPU 대신 CPU로 고정 (TimesFM 인덱싱 오류 방지)
 device = 'cpu'  # CUDA에서 인덱싱 오류가 발생하므로 CPU로 강제 변경
@@ -137,7 +135,7 @@ df_model['is_holiday'] = df['is_holiday']
 df_model['is_offday'] = df['is_offday']
 
 # Train/Test split: 마지막 7일은 테스트셋으로 사용
-horizon_len = 7
+horizon_len = 14
 train_df = df_model.iloc[:-horizon_len].copy()
 test_df = df_model.iloc[-horizon_len:].copy()
 
@@ -299,44 +297,8 @@ plt.figure(figsize=(15, 7))
 # 전체 실제 데이터
 plt.plot(df_model['ds'], df_model['y'], label='Actual', marker='o', color='blue', markersize=4)
 
-# Historical Fit 추가 (과거 데이터의 추세선)
-# 실제 데이터에서 0인 값은 NaN으로 처리하여 추세선 계산 시 제외
-y_values = df_model['y'].values
-y_values_filtered = np.where(y_values == 0, np.nan, y_values)
-
-# 데이터 크기에 따라 적절한 window_length 설정 (반드시 홀수여야 함)
-window_length = min(51, (len(y_values) // 2) * 2 - 1)
-if window_length < 3:
-    window_length = 3
-
-# 누락된 값(NaN)이 있으므로, 유효한 값만 추세선 계산 후 보간
-non_nan_indices = ~np.isnan(y_values_filtered)
-x_valid = np.arange(len(y_values_filtered))[non_nan_indices]
-y_valid = y_values_filtered[non_nan_indices]
-
-if len(y_valid) > window_length:
-    # Savitzky-Golay 필터 적용 (부드러운 곡선 생성)
-    y_trend = savgol_filter(y_valid, window_length, 3)
-    
-    # 전체 범위로 보간
-    f = interp1d(x_valid, y_trend, kind='cubic', fill_value='extrapolate')
-    trend_full = f(np.arange(len(y_values_filtered)))
-    
-    # 추세선 그리기
-    plt.plot(df_model['ds'], trend_full, label='Historical Fit', linestyle=':', color='green', linewidth=1.5)
-
 # 테스트 기간 데이터 (실제값) 강조
 plt.plot(test_df['ds'], test_df['y'], label='Test Actual', color='forestgreen', marker='s', linewidth=2, markersize=6)
-
-# 단순 과거 평균 예측 (History Predict)
-# 평일과 휴일 구분하여 평균 계산
-weekday_avg = df[df['is_offday'] == 0]['total_order_cnt'].mean()
-offday_avg = df[df['is_offday'] == 1]['total_order_cnt'].mean()
-
-# 테스트 기간의 평일/휴일 구분에 따라 평균값 적용
-history_pred = [offday_avg if x == 1 else weekday_avg for x in test_df['is_offday']]
-plt.plot(test_df['ds'], history_pred, label='History Predict', 
-         marker='^', linestyle='-.', color='orange', linewidth=2, markersize=6)
 
 # Covariates 적용 예측 결과
 if cov_forecasts and has_valid_covariates:

@@ -156,20 +156,8 @@ tfm = timesfm.TimesFm(
     ),
 )
 
-# 1. 기본 forecast_on_df API를 사용한 예측 수행
-forecast_df = tfm.forecast_on_df(
-    inputs=train_df,
-    freq="D",
-    value_name="y",
-    num_jobs=-1,
-)
+print("df_model", df_model)
 
-# 학습 데이터의 마지막 날짜 이후의 예측 결과만 추출
-max_train_date = train_df['ds'].max()
-forecast_horizon = forecast_df[forecast_df['ds'] > max_train_date]
-
-# 2. Covariates를 활용한 예측 준비
-# 데이터 배치 함수
 def get_batched_data_fn(batch_size=32, context_len=32, horizon_len=7):
     examples = defaultdict(list)
     
@@ -178,24 +166,12 @@ def get_batched_data_fn(batch_size=32, context_len=32, horizon_len=7):
         sub_df = df_model[df_model["unique_id"] == unique_id]
         sub_df = sub_df.sort_values('ds')
         
-        # 기본 TimesFM 예측 결과를 gen_forecast로 사용
-        sub_df = sub_df.merge(
-            forecast_df[['ds', 'timesfm']], 
-            on='ds', 
-            how='left'
-        )
-        sub_df['gen_forecast'] = sub_df['timesfm']
-        
         for start in range(0, len(sub_df) - (context_len + horizon_len), horizon_len):
             num_examples += 1
             context_end = start + context_len
             
             examples["unique_id"].append(unique_id)
             examples["inputs"].append(sub_df["y"][start:context_end].tolist())
-            examples["gen_forecast"].append(sub_df["gen_forecast"][start:context_end + horizon_len].tolist())
-            examples["week_day"].append(sub_df["week_day"][start:context_end + horizon_len].tolist())
-            examples["is_weekend"].append(sub_df["is_weekend"][start:context_end + horizon_len].tolist())
-            examples["is_holiday"].append(sub_df["is_holiday"][start:context_end + horizon_len].tolist())
             examples["is_offday"].append(sub_df["is_offday"][start:context_end + horizon_len].tolist())
             examples["outputs"].append(sub_df["y"][context_end:context_end + horizon_len].tolist())
     
@@ -232,16 +208,11 @@ for i, example in enumerate(input_data()):
     start_time = time.time()
     
     try:
-        # Covariates를 활용한 예측
+        # Covariates를 활용한 예측 - is_offday만 사용
         cov_forecast, ols_forecast = tfm.forecast_with_covariates(  
             inputs=example["inputs"],
-            dynamic_numerical_covariates={
-                "gen_forecast": example["gen_forecast"],
-            },
+            dynamic_numerical_covariates={},
             dynamic_categorical_covariates={
-                "week_day": example["week_day"],
-                "is_weekend": example["is_weekend"],
-                "is_holiday": example["is_holiday"],
                 "is_offday": example["is_offday"],
             },
             static_numerical_covariates={},
@@ -313,10 +284,6 @@ plt.plot(df_model['ds'], df_model['y'], label='Actual', marker='o', color='blue'
 # 테스트 기간 데이터 (실제값) 강조
 plt.plot(test_df['ds'], test_df['y'], label='Test Actual', color='forestgreen', marker='s', linewidth=2, markersize=6)
 
-# 기본 TimesFM 예측 결과
-plt.plot(forecast_horizon['ds'], forecast_horizon['timesfm'], 
-         label='TimesFM Forecast', marker='x', linestyle='--', color='red', markersize=6)
-
 # Covariates 적용 예측 결과 (마지막 배치의 예측 결과 사용)
 if cov_forecasts and has_valid_covariates:
     try:
@@ -326,27 +293,20 @@ if cov_forecasts and has_valid_covariates:
         # NaN 값 확인 및 처리
         if not np.isnan(np.array(cov_preds)).any():
             plt.plot(test_df['ds'], cov_preds, 
-                     label='TimesFM+Covariates', marker='D', linestyle=':', color='magenta', linewidth=2, markersize=6)
+                     label='TimesFM+Offday', marker='D', linestyle=':', color='magenta', linewidth=2, markersize=6)
         else:
             print("경고: Covariates 예측 결과에 NaN 값이 포함되어 있어 그래프에 표시하지 않습니다.")
     except Exception as e:
         print(f"Covariates 그래프 그리기 오류: {e}")
 
-# 주말/휴일 표시
-holiday_dates = df[df['is_holiday'] == 1]['d_day'].values
-weekend_dates = df[(df['is_weekend'] == 1) & (df['is_holiday'] == 0)]['d_day'].values
+# 주말/휴일 표시 (Offday로 통합해서 표시)
+offday_dates = df[df['is_offday'] == 1]['d_day'].values
 
-if len(holiday_dates) > 0:
-    holiday_in_range = [date for date in holiday_dates if date >= df_model['ds'].min() and date <= df_model['ds'].max()]
-    if holiday_in_range:
-        plt.scatter(holiday_in_range, [df_model['y'].max() * 1.05] * len(holiday_in_range), 
-                  color='red', marker='v', s=100, label='Holidays')
-
-if len(weekend_dates) > 0:
-    weekend_in_range = [date for date in weekend_dates if date >= df_model['ds'].min() and date <= df_model['ds'].max()]
-    if weekend_in_range:
-        plt.scatter(weekend_in_range, [df_model['y'].max() * 1.02] * len(weekend_in_range), 
-                  color='orange', marker='^', s=100, label='Weekends')
+if len(offday_dates) > 0:
+    offday_in_range = [date for date in offday_dates if date >= df_model['ds'].min() and date <= df_model['ds'].max()]
+    if offday_in_range:
+        plt.scatter(offday_in_range, [df_model['y'].max() * 1.05] * len(offday_in_range), 
+                  color='purple', marker='v', s=100, label='Off Days')
 
 # 테스트 기간 시작 표시
 plt.axvline(x=test_df['ds'].iloc[0], color='darkgray', linestyle='--', linewidth=2, label='Test Period Start')
@@ -358,7 +318,7 @@ plt.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.4)
 # 축 레이블과 제목
 plt.xlabel('Date', fontsize=12, fontweight='bold')
 plt.ylabel('Total Order Count', fontsize=12, fontweight='bold')
-plt.title('TimesFM Forecast with Covariates', fontsize=16, fontweight='bold')
+plt.title('TimesFM Forecast with Offday Covariate', fontsize=16, fontweight='bold')
 
 # 범례 설정
 plt.legend(loc='upper right', fontsize=10, framealpha=0.9)
@@ -371,64 +331,10 @@ plt.tight_layout()
 
 # 이미지 저장
 current_dir = os.path.dirname(os.path.abspath(__file__))
-image_path = os.path.join(current_dir, 'timesfm_covariates_forecast.png')
+image_path = os.path.join(current_dir, 'timesfm_offday_forecast.png')
 plt.savefig(image_path, dpi=300, bbox_inches='tight')
 print(f"이미지가 저장되었습니다: {image_path}")
 
 # 그래프 보여주기
 plt.show()
 plt.close()
-
-# 예측 성능 평가 (테스트 데이터에 대해)
-if cov_forecasts and has_valid_covariates:
-    print("\n테스트 데이터 예측 성능:")
-    
-    # 기본 TimesFM 예측 성능
-    base_rmse = np.sqrt(mean_squared_error(test_df['y'], forecast_horizon['timesfm']))
-    base_mae = mean_absolute_error(test_df['y'], forecast_horizon['timesfm'])
-    base_mape = np.mean(np.abs((test_df['y'] - forecast_horizon['timesfm']) / np.maximum(test_df['y'], 1))) * 100
-    
-    try:
-        # Covariates 적용 TimesFM 예측 성능
-        cov_preds = cov_forecasts[0][:horizon_len] if isinstance(cov_forecasts[0], list) else cov_forecasts[:horizon_len]
-        
-        # NaN 값 확인
-        if not np.isnan(np.array(cov_preds)).any():
-            cov_rmse = np.sqrt(mean_squared_error(test_df['y'], cov_preds))
-            cov_mae = mean_absolute_error(test_df['y'], cov_preds)
-            cov_mape = np.mean(np.abs((test_df['y'] - cov_preds) / np.maximum(test_df['y'], 1))) * 100
-            
-            print("\n기본 TimesFM 성능:")
-            print(f"RMSE: {base_rmse:.2f}")
-            print(f"MAE: {base_mae:.2f}")
-            print(f"MAPE: {base_mape:.2f}%")
-            
-            print("\nTimesFM + Covariates 성능:")
-            print(f"RMSE: {cov_rmse:.2f}")
-            print(f"MAE: {cov_mae:.2f}")
-            print(f"MAPE: {cov_mape:.2f}%")
-            
-            print(f"\n성능 개선율:")
-            print(f"RMSE 개선: {(base_rmse - cov_rmse) / base_rmse:.2%}")
-            print(f"MAE 개선: {(base_mae - cov_mae) / base_mae:.2%}")
-            print(f"MAPE 개선: {(base_mape - cov_mape) / base_mape:.2%}")
-        else:
-            print("\n경고: Covariates 예측에 NaN 값이 포함되어 있어 성능 평가를 건너뜁니다.")
-            print("\n기본 TimesFM 성능만 표시:")
-            print(f"RMSE: {base_rmse:.2f}")
-            print(f"MAE: {base_mae:.2f}")
-            print(f"MAPE: {base_mape:.2f}%")
-    except Exception as e:
-        print(f"\n성능 평가 중 오류 발생: {e}")
-        print("\n기본 TimesFM 성능만 표시:")
-        print(f"RMSE: {base_rmse:.2f}")
-        print(f"MAE: {base_mae:.2f}")
-        print(f"MAPE: {base_mape:.2f}%")
-else:
-    print("\n유효한 Covariates 예측 결과가 없어 기본 TimesFM 성능만 표시합니다:")
-    base_rmse = np.sqrt(mean_squared_error(test_df['y'], forecast_horizon['timesfm']))
-    base_mae = mean_absolute_error(test_df['y'], forecast_horizon['timesfm'])
-    base_mape = np.mean(np.abs((test_df['y'] - forecast_horizon['timesfm']) / np.maximum(test_df['y'], 1))) * 100
-    print(f"RMSE: {base_rmse:.2f}")
-    print(f"MAE: {base_mae:.2f}")
-    print(f"MAPE: {base_mape:.2f}%")

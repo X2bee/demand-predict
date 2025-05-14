@@ -11,8 +11,8 @@ import time
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 # 디바이스 설정: GPU 대신 CPU로 고정 (TimesFM 인덱싱 오류 방지)
-device = 'cpu'
-torch.set_default_device('cpu')
+device = 'cuda'
+torch.set_default_device('cuda')
 print(f"Using device: {device}")
 
 # 한국 공휴일 API 함수
@@ -280,7 +280,7 @@ for i, example in enumerate(input_data()):
     
     # 마지막 배치의 예측 값 저장 (시각화용)
     if i == len(list(input_data())) - 1:
-        cov_forecasts = cov_forecast.tolist()
+        cov_forecasts = cov_forecast if isinstance(cov_forecast, list) else cov_forecast.tolist()
 
 print("\n\n모델 평가 지표:")
 for k, v in metrics.items():
@@ -302,7 +302,7 @@ plt.plot(forecast_horizon['ds'], forecast_horizon['timesfm'],
 # Covariates 적용 예측 결과 (마지막 배치의 예측 결과 사용)
 if cov_forecasts:
     # 마지막 배치의 예측 결과를 테스트 기간에 매핑
-    plt.plot(test_df['ds'], cov_forecasts[0][:horizon_len], 
+    plt.plot(test_df['ds'], cov_forecasts[0][:horizon_len] if isinstance(cov_forecasts[0], list) else cov_forecasts[:horizon_len], 
              label='TimesFM+Covariates', marker='D', linestyle=':', color='magenta', linewidth=2, markersize=6)
 
 # 주말/휴일 표시
@@ -362,7 +362,7 @@ if cov_forecasts:
     base_mape = np.mean(np.abs((test_df['y'] - forecast_horizon['timesfm']) / np.maximum(test_df['y'], 1))) * 100
     
     # Covariates 적용 TimesFM 예측 성능
-    cov_preds = cov_forecasts[0][:horizon_len]
+    cov_preds = cov_forecasts[0][:horizon_len] if isinstance(cov_forecasts[0], list) else cov_forecasts[:horizon_len]
     cov_rmse = np.sqrt(mean_squared_error(test_df['y'], cov_preds))
     cov_mae = mean_absolute_error(test_df['y'], cov_preds)
     cov_mape = np.mean(np.abs((test_df['y'] - cov_preds) / np.maximum(test_df['y'], 1))) * 100

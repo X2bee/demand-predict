@@ -292,6 +292,8 @@ if cov_forecasts and has_valid_covariates:
         
         # NaN 값 확인 및 처리
         if not np.isnan(np.array(cov_preds)).any():
+            # 음수 예측값을 0으로 보정 (주문량은 음수가 될 수 없음)
+            cov_preds = np.maximum(cov_preds, 0)
             # label은 한 번만 표시되도록 설정
             plt.plot(test_df['ds'], cov_preds, 
                      label='TimesFM+Offday', marker='D', linestyle=':', color='magenta', linewidth=2, markersize=6)
@@ -321,8 +323,10 @@ plt.xlabel('Date', fontsize=12, fontweight='bold')
 plt.ylabel('Total Order Count', fontsize=12, fontweight='bold')
 plt.title('TimesFM Forecast with Offday Covariate', fontsize=16, fontweight='bold')
 
-# 범례 설정
-plt.legend(loc='upper right', fontsize=10, framealpha=0.9)
+# 범례 설정 - 중복 제거
+handles, labels = plt.gca().get_legend_handles_labels()
+by_label = dict(zip(labels, handles))
+plt.legend(by_label.values(), by_label.keys(), loc='upper right', fontsize=10, framealpha=0.9)
 
 # 그래프 스타일 설정
 plt.xticks(fontsize=10, rotation=45)

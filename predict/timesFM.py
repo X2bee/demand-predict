@@ -217,6 +217,7 @@ input_data = get_batched_data_fn(
 # 3. Covariates를 활용한 예측 실행
 metrics = defaultdict(list)
 cov_forecasts = []
+has_valid_covariates = False
 
 for i, example in enumerate(input_data()):
     if len(example["inputs"]) == 0:
@@ -230,61 +231,78 @@ for i, example in enumerate(input_data()):
     
     start_time = time.time()
     
-    # Covariates를 활용한 예측
-    cov_forecast, ols_forecast = tfm.forecast_with_covariates(  
-        inputs=example["inputs"],
-        dynamic_numerical_covariates={
-            "gen_forecast": example["gen_forecast"],
-        },
-        dynamic_categorical_covariates={
-            "week_day": example["week_day"],
-            "is_weekend": example["is_weekend"],
-            "is_holiday": example["is_holiday"],
-            "is_offday": example["is_offday"],
-        },
-        static_numerical_covariates={},
-        static_categorical_covariates={
-            "unique_id": example["unique_id"]
-        },
-        freq=[0] * len(example["inputs"]),
-        xreg_mode="xreg + timesfm",           # default
-        ridge=0.0,
-        force_on_cpu=True,                   # CPU 강제 사용으로 변경
-        normalize_xreg_target_per_input=True,  # default
+    try:
+        # Covariates를 활용한 예측
+        cov_forecast, ols_forecast = tfm.forecast_with_covariates(  
+            inputs=example["inputs"],
+            dynamic_numerical_covariates={
+                "gen_forecast": example["gen_forecast"],
+            },
+            dynamic_categorical_covariates={
+                "week_day": example["week_day"],
+                "is_weekend": example["is_weekend"],
+                "is_holiday": example["is_holiday"],
+                "is_offday": example["is_offday"],
+            },
+            static_numerical_covariates={},
+            static_categorical_covariates={
+                "unique_id": example["unique_id"]
+            },
+            freq=[0] * len(example["inputs"]),
+            xreg_mode="xreg + timesfm",           # default
+            ridge=0.0,
+            force_on_cpu=True,                   # CPU 강제 사용으로 변경
+            normalize_xreg_target_per_input=True,  # default
+        )
+        
+        # NaN 검사 및 처리
+        if isinstance(cov_forecast, list):
+            contains_nan = any(np.isnan(np.array(cov_forecast)).any() for cf in cov_forecast)
+        else:
+            contains_nan = np.isnan(np.array(cov_forecast)).any()
+            
+        if not contains_nan:
+            has_valid_covariates = True
+            metrics["eval_mae_xreg_timesfm"].extend(
+                mae(cov_forecast, example["outputs"])
+            )
+            metrics["eval_mae_xreg"].extend(
+                mae(ols_forecast, example["outputs"])
+            )
+            metrics["eval_mse_xreg_timesfm"].extend(
+                mse(cov_forecast, example["outputs"])
+            )
+            metrics["eval_mse_xreg"].extend(
+                mse(ols_forecast, example["outputs"])
+            )
+            
+            # 마지막 배치의 예측 값 저장 (시각화용)
+            if i == len(list(input_data())) - 1:
+                cov_forecasts = cov_forecast if isinstance(cov_forecast, list) else cov_forecast.tolist()
+        else:
+            print(f"\n주의: 배치 {i}에서 NaN 값 발견, 이 배치는 건너뜁니다.")
+    except Exception as e:
+        print(f"\n오류 발생: {e}")
+    
+    # TimesFM 기본 예측은 항상 평가
+    metrics["eval_mae_timesfm"].extend(
+        mae(raw_forecast[:, :horizon_len], example["outputs"])
+    )
+    metrics["eval_mse_timesfm"].extend(
+        mse(raw_forecast[:, :horizon_len], example["outputs"])
     )
     
     print(
         f"\r배치 {i} 처리 완료, 소요 시간: {time.time() - start_time:.2f}초",
         end="",
     )
-    
-    # 예측 결과 저장
-    metrics["eval_mae_timesfm"].extend(
-        mae(raw_forecast[:, :horizon_len], example["outputs"])
-    )
-    metrics["eval_mae_xreg_timesfm"].extend(
-        mae(cov_forecast, example["outputs"])
-    )
-    metrics["eval_mae_xreg"].extend(
-        mae(ols_forecast, example["outputs"])
-    )
-    metrics["eval_mse_timesfm"].extend(
-        mse(raw_forecast[:, :horizon_len], example["outputs"])
-    )
-    metrics["eval_mse_xreg_timesfm"].extend(
-        mse(cov_forecast, example["outputs"])
-    )
-    metrics["eval_mse_xreg"].extend(
-        mse(ols_forecast, example["outputs"])
-    )
-    
-    # 마지막 배치의 예측 값 저장 (시각화용)
-    if i == len(list(input_data())) - 1:
-        cov_forecasts = cov_forecast if isinstance(cov_forecast, list) else cov_forecast.tolist()
 
 print("\n\n모델 평가 지표:")
 for k, v in metrics.items():
-    print(f"{k}: {np.mean(v)}")
+    if len(v) > 0:
+        print(f"{k}: {np.mean(v)}")
+    else:
+        print(f"{k}: 유효한 데이터 없음")
 
 # 4. 시각화
 plt.figure(figsize=(15, 7))
@@ -300,10 +318,19 @@ plt.plot(forecast_horizon['ds'], forecast_horizon['timesfm'],
          label='TimesFM Forecast', marker='x', linestyle='--', color='red', markersize=6)
 
 # Covariates 적용 예측 결과 (마지막 배치의 예측 결과 사용)
-if cov_forecasts:
-    # 마지막 배치의 예측 결과를 테스트 기간에 매핑
-    plt.plot(test_df['ds'], cov_forecasts[0][:horizon_len] if isinstance(cov_forecasts[0], list) else cov_forecasts[:horizon_len], 
-             label='TimesFM+Covariates', marker='D', linestyle=':', color='magenta', linewidth=2, markersize=6)
+if cov_forecasts and has_valid_covariates:
+    try:
+        # 마지막 배치의 예측 결과를 테스트 기간에 매핑
+        cov_preds = cov_forecasts[0][:horizon_len] if isinstance(cov_forecasts[0], list) else cov_forecasts[:horizon_len]
+        
+        # NaN 값 확인 및 처리
+        if not np.isnan(np.array(cov_preds)).any():
+            plt.plot(test_df['ds'], cov_preds, 
+                     label='TimesFM+Covariates', marker='D', linestyle=':', color='magenta', linewidth=2, markersize=6)
+        else:
+            print("경고: Covariates 예측 결과에 NaN 값이 포함되어 있어 그래프에 표시하지 않습니다.")
+    except Exception as e:
+        print(f"Covariates 그래프 그리기 오류: {e}")
 
 # 주말/휴일 표시
 holiday_dates = df[df['is_holiday'] == 1]['d_day'].values
@@ -353,7 +380,7 @@ plt.show()
 plt.close()
 
 # 예측 성능 평가 (테스트 데이터에 대해)
-if cov_forecasts:
+if cov_forecasts and has_valid_covariates:
     print("\n테스트 데이터 예측 성능:")
     
     # 기본 TimesFM 예측 성능
@@ -361,23 +388,47 @@ if cov_forecasts:
     base_mae = mean_absolute_error(test_df['y'], forecast_horizon['timesfm'])
     base_mape = np.mean(np.abs((test_df['y'] - forecast_horizon['timesfm']) / np.maximum(test_df['y'], 1))) * 100
     
-    # Covariates 적용 TimesFM 예측 성능
-    cov_preds = cov_forecasts[0][:horizon_len] if isinstance(cov_forecasts[0], list) else cov_forecasts[:horizon_len]
-    cov_rmse = np.sqrt(mean_squared_error(test_df['y'], cov_preds))
-    cov_mae = mean_absolute_error(test_df['y'], cov_preds)
-    cov_mape = np.mean(np.abs((test_df['y'] - cov_preds) / np.maximum(test_df['y'], 1))) * 100
-    
-    print("\n기본 TimesFM 성능:")
+    try:
+        # Covariates 적용 TimesFM 예측 성능
+        cov_preds = cov_forecasts[0][:horizon_len] if isinstance(cov_forecasts[0], list) else cov_forecasts[:horizon_len]
+        
+        # NaN 값 확인
+        if not np.isnan(np.array(cov_preds)).any():
+            cov_rmse = np.sqrt(mean_squared_error(test_df['y'], cov_preds))
+            cov_mae = mean_absolute_error(test_df['y'], cov_preds)
+            cov_mape = np.mean(np.abs((test_df['y'] - cov_preds) / np.maximum(test_df['y'], 1))) * 100
+            
+            print("\n기본 TimesFM 성능:")
+            print(f"RMSE: {base_rmse:.2f}")
+            print(f"MAE: {base_mae:.2f}")
+            print(f"MAPE: {base_mape:.2f}%")
+            
+            print("\nTimesFM + Covariates 성능:")
+            print(f"RMSE: {cov_rmse:.2f}")
+            print(f"MAE: {cov_mae:.2f}")
+            print(f"MAPE: {cov_mape:.2f}%")
+            
+            print(f"\n성능 개선율:")
+            print(f"RMSE 개선: {(base_rmse - cov_rmse) / base_rmse:.2%}")
+            print(f"MAE 개선: {(base_mae - cov_mae) / base_mae:.2%}")
+            print(f"MAPE 개선: {(base_mape - cov_mape) / base_mape:.2%}")
+        else:
+            print("\n경고: Covariates 예측에 NaN 값이 포함되어 있어 성능 평가를 건너뜁니다.")
+            print("\n기본 TimesFM 성능만 표시:")
+            print(f"RMSE: {base_rmse:.2f}")
+            print(f"MAE: {base_mae:.2f}")
+            print(f"MAPE: {base_mape:.2f}%")
+    except Exception as e:
+        print(f"\n성능 평가 중 오류 발생: {e}")
+        print("\n기본 TimesFM 성능만 표시:")
+        print(f"RMSE: {base_rmse:.2f}")
+        print(f"MAE: {base_mae:.2f}")
+        print(f"MAPE: {base_mape:.2f}%")
+else:
+    print("\n유효한 Covariates 예측 결과가 없어 기본 TimesFM 성능만 표시합니다:")
+    base_rmse = np.sqrt(mean_squared_error(test_df['y'], forecast_horizon['timesfm']))
+    base_mae = mean_absolute_error(test_df['y'], forecast_horizon['timesfm'])
+    base_mape = np.mean(np.abs((test_df['y'] - forecast_horizon['timesfm']) / np.maximum(test_df['y'], 1))) * 100
     print(f"RMSE: {base_rmse:.2f}")
     print(f"MAE: {base_mae:.2f}")
     print(f"MAPE: {base_mape:.2f}%")
-    
-    print("\nTimesFM + Covariates 성능:")
-    print(f"RMSE: {cov_rmse:.2f}")
-    print(f"MAE: {cov_mae:.2f}")
-    print(f"MAPE: {cov_mape:.2f}%")
-    
-    print(f"\n성능 개선율:")
-    print(f"RMSE 개선: {(base_rmse - cov_rmse) / base_rmse:.2%}")
-    print(f"MAE 개선: {(base_mae - cov_mae) / base_mae:.2%}")
-    print(f"MAPE 개선: {(base_mape - cov_mape) / base_mape:.2%}")
